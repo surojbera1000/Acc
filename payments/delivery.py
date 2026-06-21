@@ -54,6 +54,12 @@ class DeliveryService:
             if account.get("two_fa"):
                 delivery_text += f"🔐 2FA: <code>{account['two_fa']}</code>\n"
 
+            if account.get("session"):
+                delivery_text += (
+                    f"\n💾 <b>Session string</b> (log in with this to stay logged in):\n"
+                    f"<code>{account['session']}</code>\n"
+                )
+
             delivery_text += (
                 f"\n━━━━━━━━━━━━━━━━━━━━━\n"
                 f"⚠️ <i>Save this information securely!</i>"

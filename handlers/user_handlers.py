@@ -251,6 +251,12 @@ async def confirm_purchase_callback(update: Update, context: ContextTypes.DEFAUL
         if account.get("two_fa"):
             delivery_text += f"🔐 2FA: <code>{account['two_fa']}</code>\n"
 
+        if account.get("session"):
+            delivery_text += (
+                f"\n💾 <b>Session string</b> (log in with this to stay logged in):\n"
+                f"<code>{account['session']}</code>\n"
+            )
+
         delivery_text += (
             f"\n💰 Amount Paid: <b>{format_price(account['price'])}</b>\n"
             f"👛 Remaining Balance: <b>{format_price(new_balance)}</b>\n\n"

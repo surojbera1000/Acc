@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 
 # Conversation states for admin flows
 (ADD_COUNTRY_NAME, ADD_COUNTRY_CODE, ADD_COUNTRY_FLAG,
- ADD_ACC_COUNTRY, ADD_ACC_PHONE, ADD_ACC_OTP, ADD_ACC_2FA, ADD_ACC_PRICE,
+ ADD_ACC_COUNTRY, ADD_ACC_PHONE, ADD_ACC_OTP, ADD_ACC_2FA, ADD_ACC_SESSION, ADD_ACC_PRICE,
  EDIT_ACC_SELECT, EDIT_ACC_FIELD, EDIT_ACC_VALUE,
- DELETE_ACC_SELECT) = range(12)
+ DELETE_ACC_SELECT) = range(13)
 
 
 def get_db(context: ContextTypes.DEFAULT_TYPE) -> Database:
@@ -260,7 +260,12 @@ async def add_country_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # ───── Interactive (button-driven) Add Account conversation ─────
 # Flow: click "➕ Add Account" → pick country → send phone → send OTP
-# (or Skip) → send 2FA (or Skip) → send price → saved automatically.
+# (or Skip) → send 2FA (or Skip) → send session string (or Skip) →
+# send price → saved automatically.
+#
+# The session string lets the buyer log in to a ready, already-authorised
+# session instead of re-logging in with the OTP (which is what causes the
+# "logged out right after login" problem when reselling accounts).
 
 @admin_required
 async def add_account_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -302,7 +307,7 @@ async def add_account_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(
         "➕ <b>Add New Account</b>\n\n"
-        "<b>Step 1 of 4</b> — Select the country for this account:",
+        "<b>Step 1 of 6</b> — Select the country for this account:",
         reply_markup=InlineKeyboardMarkup(rows),
         parse_mode="HTML"
     )
@@ -331,7 +336,7 @@ async def add_account_choose_country(update: Update, context: ContextTypes.DEFAU
     await query.edit_message_text(
         f"➕ <b>Add New Account</b>\n"
         f"🌍 Country: {country['flag']} <b>{country['name']}</b>\n\n"
-        f"<b>Step 2 of 4</b> — Send the <b>phone number</b>.\n"
+        f"<b>Step 2 of 6</b> — Send the <b>phone number</b>.\n"
         f"<i>Example:</i> <code>+919876543210</code>\n\n"
         f"Send /cancel anytime to abort.",
         parse_mode="HTML"
@@ -355,7 +360,7 @@ async def add_account_receive_phone(update: Update, context: ContextTypes.DEFAUL
     ])
     await update.message.reply_text(
         f"📱 Phone: <code>{phone}</code>\n\n"
-        f"<b>Step 3 of 4</b> — Send the <b>OTP / login code</b> for this account,\n"
+        f"<b>Step 3 of 6</b> — Send the <b>OTP / login code</b> for this account,\n"
         f"or tap <b>Skip</b> if there isn't one.",
         reply_markup=keyboard,
         parse_mode="HTML"
@@ -387,7 +392,7 @@ async def _ask_for_2fa(send_func):
         [InlineKeyboardButton("❌ Cancel", callback_data="addacc_cancel")],
     ])
     await send_func(
-        "<b>Step 4 of 4</b> — Send the <b>2FA password / backup code</b> for this account,\n"
+        "<b>Step 4 of 6</b> — Send the <b>2FA password / backup code</b> for this account,\n"
         "or tap <b>Skip</b> if there isn't one.",
         reply_markup=keyboard,
         parse_mode="HTML"
@@ -397,25 +402,61 @@ async def _ask_for_2fa(send_func):
 
 @admin_required
 async def add_account_receive_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """2FA received via text — ask for price."""
+    """2FA received via text — ask for the session string."""
     two_fa = update.message.text.strip()
     context.user_data.setdefault("new_account", {})["two_fa"] = two_fa if two_fa and two_fa != "-" else None
-    return await _ask_for_price(update.message.reply_text)
+    return await _ask_for_session(update.message.reply_text)
 
 
 @admin_required
 async def add_account_skip_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Skip 2FA — ask for price."""
+    """Skip 2FA — ask for the session string."""
     query = update.callback_query
     await query.answer()
     context.user_data.setdefault("new_account", {})["two_fa"] = None
+    return await _ask_for_session(query.edit_message_text)
+
+
+async def _ask_for_session(send_func):
+    """Helper to prompt for the session-save step."""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ Skip (no session)", callback_data="addacc_skip_session")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="addacc_cancel")],
+    ])
+    await send_func(
+        "<b>Step 5 of 6</b> — 💾 Send the <b>session string</b> to save with this account.\n\n"
+        "This is the logged-in session (e.g. a Telethon/Pyrogram <i>string session</i>) "
+        "that lets the buyer open the account <b>already logged in</b>, instead of "
+        "re-logging in with the OTP — which is what causes the account to get "
+        "logged out right after login.\n\n"
+        "Paste the full session string, or tap <b>Skip</b> if you don't have one.",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    return ADD_ACC_SESSION
+
+
+@admin_required
+async def add_account_receive_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Session string received via text — ask for price."""
+    session = update.message.text.strip()
+    context.user_data.setdefault("new_account", {})["session"] = session if session and session != "-" else None
+    return await _ask_for_price(update.message.reply_text)
+
+
+@admin_required
+async def add_account_skip_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Skip session — ask for price."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.setdefault("new_account", {})["session"] = None
     return await _ask_for_price(query.edit_message_text)
 
 
 async def _ask_for_price(send_func):
     """Helper to prompt for the price step."""
     await send_func(
-        "💰 Almost done — send the <b>price</b> for this account in ₹.\n"
+        "💰 <b>Step 6 of 6</b> — Send the <b>price</b> for this account in ₹.\n"
         "<i>Example:</i> <code>150</code>",
         parse_mode="HTML"
     )
@@ -457,6 +498,7 @@ async def add_account_receive_price(update: Update, context: ContextTypes.DEFAUL
         price=price,
         otp=draft.get("otp"),
         two_fa=draft.get("two_fa"),
+        session=draft.get("session"),
         added_by=update.effective_user.id
     )
 
@@ -467,7 +509,8 @@ async def add_account_receive_price(update: Update, context: ContextTypes.DEFAUL
         f"📱 Phone: <code>{phone}</code>\n"
         f"💰 Price: {format_price(price)}\n"
         f"🔑 OTP: {'<code>' + draft['otp'] + '</code>' if draft.get('otp') else 'Not set'}\n"
-        f"🔐 2FA: {'<code>' + draft['two_fa'] + '</code>' if draft.get('two_fa') else 'Not set'}\n\n"
+        f"🔐 2FA: {'<code>' + draft['two_fa'] + '</code>' if draft.get('two_fa') else 'Not set'}\n"
+        f"💾 Session: {'✅ Saved' if draft.get('session') else 'Not set'}\n\n"
         f"📦 Stock updated automatically!\n"
         f"<i>Tap ➕ Add Account in /admin to add another.</i>",
         parse_mode="HTML"
@@ -495,8 +538,9 @@ async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Handle /addaccount command (power-user one-liner alternative)."""
     if not context.args:
         await update.message.reply_text(
-            "Usage: <code>/addaccount country_id|phone|price|otp|2fa</code>\n"
-            "Example: <code>/addaccount 1|+919876543210|150|1234|backup_code</code>",
+            "Usage: <code>/addaccount country_id|phone|price|otp|2fa|session</code>\n"
+            "Example: <code>/addaccount 1|+919876543210|150|1234|backup_code|1ApWap...</code>\n\n"
+            "<i>otp, 2fa and session are optional — use - to skip a field.</i>",
             parse_mode="HTML"
         )
         return
@@ -515,6 +559,7 @@ async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         price = float(parts[2].strip())
         otp = parts[3].strip() if len(parts) > 3 and parts[3].strip() != "-" else None
         two_fa = parts[4].strip() if len(parts) > 4 and parts[4].strip() != "-" else None
+        session = parts[5].strip() if len(parts) > 5 and parts[5].strip() != "-" else None
     except (ValueError, IndexError):
         await update.message.reply_text("❌ Invalid values. Check format and try again.")
         return
@@ -533,6 +578,7 @@ async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         price=price,
         otp=otp,
         two_fa=two_fa,
+        session=session,
         added_by=update.effective_user.id
     )
 
@@ -543,7 +589,8 @@ async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"📱 Phone: <code>{phone}</code>\n"
         f"💰 Price: {format_price(price)}\n"
         f"🔑 OTP: {'Set' if otp else 'Not set'}\n"
-        f"🔐 2FA: {'Set' if two_fa else 'Not set'}\n\n"
+        f"🔐 2FA: {'Set' if two_fa else 'Not set'}\n"
+        f"💾 Session: {'Saved' if session else 'Not set'}\n\n"
         f"📦 Stock updated automatically!",
         parse_mode="HTML"
     )
@@ -639,10 +686,12 @@ async def admin_edit_account_callback(update: Update, context: ContextTypes.DEFA
         "• phone_number\n"
         "• otp\n"
         "• two_fa\n"
+        "• session\n"
         "• price\n\n"
         "<b>Examples:</b>\n"
         "<code>/editaccount 5|price|200</code>\n"
         "<code>/editaccount 5|otp|5678</code>\n"
+        "<code>/editaccount 5|session|1ApWap...</code>\n"
         "<code>/editaccount 5|phone_number|+919999999999</code>"
     )
 
@@ -676,7 +725,7 @@ async def edit_account_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Invalid account ID.")
         return
 
-    valid_fields = ["phone_number", "otp", "two_fa", "price"]
+    valid_fields = ["phone_number", "otp", "two_fa", "session", "price"]
     if field not in valid_fields:
         await update.message.reply_text(
             f"❌ Invalid field. Valid fields: {', '.join(valid_fields)}"
@@ -1038,6 +1087,10 @@ def register_admin_handlers(application: Application):
             ADD_ACC_2FA: [
                 CallbackQueryHandler(add_account_skip_2fa, pattern=r"^addacc_skip_2fa$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_receive_2fa),
+            ],
+            ADD_ACC_SESSION: [
+                CallbackQueryHandler(add_account_skip_session, pattern=r"^addacc_skip_session$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_receive_session),
             ],
             ADD_ACC_PRICE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_receive_price),

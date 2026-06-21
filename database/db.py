@@ -57,6 +57,7 @@ class Database:
                 phone_number TEXT NOT NULL,
                 otp TEXT,
                 two_fa TEXT,
+                session TEXT,
                 price REAL NOT NULL,
                 status TEXT DEFAULT 'available',
                 added_by INTEGER,
@@ -118,6 +119,16 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_deposits_status ON deposits(status);
         """)
         await self._db.commit()
+        await self._migrate()
+
+    async def _migrate(self):
+        """Apply lightweight schema migrations for existing databases."""
+        # Add the `session` column to accounts if an older DB doesn't have it.
+        cursor = await self._db.execute("PRAGMA table_info(accounts)")
+        columns = [row["name"] for row in await cursor.fetchall()]
+        if "session" not in columns:
+            await self._db.execute("ALTER TABLE accounts ADD COLUMN session TEXT")
+            await self._db.commit()
 
     # ═══════════════════════════════════════════
     # USER OPERATIONS
@@ -256,12 +267,13 @@ class Database:
     # ═══════════════════════════════════════════
 
     async def add_account(self, country_id: int, phone_number: str, price: float,
-                          otp: str = None, two_fa: str = None, added_by: int = None) -> int:
+                          otp: str = None, two_fa: str = None, session: str = None,
+                          added_by: int = None) -> int:
         """Add a new account to stock. Returns account ID."""
         cursor = await self._db.execute(
-            """INSERT INTO accounts (country_id, phone_number, otp, two_fa, price, added_by)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (country_id, phone_number, otp, two_fa, price, added_by)
+            """INSERT INTO accounts (country_id, phone_number, otp, two_fa, session, price, added_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (country_id, phone_number, otp, two_fa, session, price, added_by)
         )
         await self._db.commit()
         return cursor.lastrowid
@@ -305,7 +317,7 @@ class Database:
 
     async def update_account(self, account_id: int, **kwargs):
         """Update account details."""
-        valid_fields = ["phone_number", "otp", "two_fa", "price", "status", "country_id"]
+        valid_fields = ["phone_number", "otp", "two_fa", "session", "price", "status", "country_id"]
         updates = {k: v for k, v in kwargs.items() if k in valid_fields}
 
         if not updates:
@@ -421,7 +433,7 @@ class Database:
     async def get_order(self, order_id: int) -> Optional[Dict]:
         """Get an order by ID."""
         cursor = await self._db.execute(
-            """SELECT o.*, a.phone_number, a.otp, a.two_fa,
+            """SELECT o.*, a.phone_number, a.otp, a.two_fa, a.session,
                       c.name as country_name, c.flag as country_flag
                FROM orders o
                JOIN accounts a ON o.account_id = a.id
