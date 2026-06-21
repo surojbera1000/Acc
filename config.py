@@ -5,11 +5,11 @@ import os
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7984346452:AAEC4BrCFZ97VoP5pHVzYkpGZtE2hUMUqI4")
 
 # Admin User IDs (Telegram user IDs who can access admin panel)
-ADMIN_IDS = [int(x) for x in os.getenv("7091794658", "7091794658").split(",") if x.strip()]
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "7091794658").split(",") if x.strip()]
 
 # UPI Configuration
-UPI_ID = os.getenv("surojseller@fam", "surojseller@fam")
-UPI_NAME = os.getenv("SANDIP BERA", "Sandip Bera")
+UPI_ID = os.getenv("UPI_ID", "surojseller@fam")
+UPI_NAME = os.getenv("UPI_NAME", "Sandip Bera")
 
 # Payment Verification Settings
 PAYMENT_CHECK_INTERVAL = 30  # seconds between payment status checks
