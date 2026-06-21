@@ -2,7 +2,7 @@
 import os
 
 # Telegram Bot Token
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7984346452:AAEC4BrCFZ97VoP5pHVzYkpGZtE2hUMUqI4")
 
 # Admin User IDs (Telegram user IDs who can access admin panel)
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
