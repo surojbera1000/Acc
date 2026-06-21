@@ -3,7 +3,7 @@ import logging
 from typing import Optional, Dict
 
 from database import Database
-from config import SUPPORT_CONTACT, ADMIN_IDS
+from config import SUPPORT_CONTACT, ADMIN_IDS, CURRENCY_SYMBOL
 
 logger = logging.getLogger(__name__)
 

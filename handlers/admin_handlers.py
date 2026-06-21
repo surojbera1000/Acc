@@ -1,6 +1,6 @@
 """Admin panel handlers for the Telegram Account Bot."""
 import logging
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     ContextTypes, ConversationHandler, MessageHandler, filters
@@ -258,51 +258,241 @@ async def add_country_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ADD ACCOUNT
 # ═══════════════════════════════════════════
 
+# ───── Interactive (button-driven) Add Account conversation ─────
+# Flow: click "➕ Add Account" → pick country → send phone → send OTP
+# (or Skip) → send 2FA (or Skip) → send price → saved automatically.
+
 @admin_required
-async def admin_add_account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start add account flow."""
+async def add_account_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point: show country picker to start the add-account flow."""
     query = update.callback_query
     await query.answer()
     db = get_db(context)
 
     countries = await db.get_countries()
-
     if not countries:
         await query.edit_message_text(
-            "❌ No countries available!\n"
+            "❌ <b>No countries available!</b>\n\n"
             "Add a country first using:\n"
-            "<code>/addcountry Name|CODE|Flag</code>",
+            "<code>/addcountry Name|CODE|Flag</code>\n"
+            "<i>Example:</i> <code>/addcountry India|IN|🇮🇳</code>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
+            ]),
             parse_mode="HTML"
         )
-        return
+        return ConversationHandler.END
 
-    text = (
-        "➕ <b>Add New Account</b>\n\n"
-        "Send account details in this format:\n\n"
-        "<code>/addaccount country_id|phone|price|otp|2fa</code>\n\n"
-        "<b>Parameters:</b>\n"
-        "• country_id - Country ID number\n"
-        "• phone - Phone number\n"
-        "• price - Price in ₹\n"
-        "• otp - OTP code (optional, use - for none)\n"
-        "• 2fa - 2FA details (optional, use - for none)\n\n"
-        "<b>Example:</b>\n"
-        "<code>/addaccount 1|+919876543210|150|1234|backup_code_here</code>\n\n"
-        "<b>Available Countries:</b>\n"
-    )
+    # Reset any stale draft
+    context.user_data["new_account"] = {}
+
+    rows = []
+    row = []
     for c in countries:
-        text += f"  {c['flag']} {c['name']} - ID: <b>{c['id']}</b>\n"
+        row.append(InlineKeyboardButton(
+            f"{c['flag']} {c['name']}",
+            callback_data=f"addacc_country_{c['id']}"
+        ))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data="addacc_cancel")])
 
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    await query.edit_message_text(
+        "➕ <b>Add New Account</b>\n\n"
+        "<b>Step 1 of 4</b> — Select the country for this account:",
+        reply_markup=InlineKeyboardMarkup(rows),
+        parse_mode="HTML"
+    )
+    return ADD_ACC_COUNTRY
+
+
+@admin_required
+async def add_account_choose_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Country picked — ask for the phone number."""
+    query = update.callback_query
+    await query.answer()
+
+    country_id = int(query.data.split("_")[-1])
+    db = get_db(context)
+    country = await db.get_country(country_id)
+    if not country:
+        await query.edit_message_text("❌ Country not found. Please try again.")
+        return ConversationHandler.END
+
+    context.user_data["new_account"] = {
+        "country_id": country_id,
+        "country_name": country["name"],
+        "country_flag": country["flag"],
+    }
+
+    await query.edit_message_text(
+        f"➕ <b>Add New Account</b>\n"
+        f"🌍 Country: {country['flag']} <b>{country['name']}</b>\n\n"
+        f"<b>Step 2 of 4</b> — Send the <b>phone number</b>.\n"
+        f"<i>Example:</i> <code>+919876543210</code>\n\n"
+        f"Send /cancel anytime to abort.",
+        parse_mode="HTML"
+    )
+    return ADD_ACC_PHONE
+
+
+@admin_required
+async def add_account_receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Phone received — ask for the OTP."""
+    phone = update.message.text.strip()
+    if not phone:
+        await update.message.reply_text("❌ Phone number can't be empty. Send a valid number.")
+        return ADD_ACC_PHONE
+
+    context.user_data.setdefault("new_account", {})["phone"] = phone
+
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
+        [InlineKeyboardButton("⏭ Skip (no OTP)", callback_data="addacc_skip_otp")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="addacc_cancel")],
     ])
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await update.message.reply_text(
+        f"📱 Phone: <code>{phone}</code>\n\n"
+        f"<b>Step 3 of 4</b> — Send the <b>OTP / login code</b> for this account,\n"
+        f"or tap <b>Skip</b> if there isn't one.",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    return ADD_ACC_OTP
+
+
+@admin_required
+async def add_account_receive_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """OTP received via text — ask for 2FA."""
+    otp = update.message.text.strip()
+    context.user_data.setdefault("new_account", {})["otp"] = otp if otp and otp != "-" else None
+    return await _ask_for_2fa(update.message.reply_text)
+
+
+@admin_required
+async def add_account_skip_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Skip OTP — ask for 2FA."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.setdefault("new_account", {})["otp"] = None
+    return await _ask_for_2fa(query.edit_message_text)
+
+
+async def _ask_for_2fa(send_func):
+    """Helper to prompt for the 2FA step (works for both message & callback)."""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ Skip (no 2FA)", callback_data="addacc_skip_2fa")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="addacc_cancel")],
+    ])
+    await send_func(
+        "<b>Step 4 of 4</b> — Send the <b>2FA password / backup code</b> for this account,\n"
+        "or tap <b>Skip</b> if there isn't one.",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    return ADD_ACC_2FA
+
+
+@admin_required
+async def add_account_receive_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """2FA received via text — ask for price."""
+    two_fa = update.message.text.strip()
+    context.user_data.setdefault("new_account", {})["two_fa"] = two_fa if two_fa and two_fa != "-" else None
+    return await _ask_for_price(update.message.reply_text)
+
+
+@admin_required
+async def add_account_skip_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Skip 2FA — ask for price."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.setdefault("new_account", {})["two_fa"] = None
+    return await _ask_for_price(query.edit_message_text)
+
+
+async def _ask_for_price(send_func):
+    """Helper to prompt for the price step."""
+    await send_func(
+        "💰 Almost done — send the <b>price</b> for this account in ₹.\n"
+        "<i>Example:</i> <code>150</code>",
+        parse_mode="HTML"
+    )
+    return ADD_ACC_PRICE
+
+
+@admin_required
+async def add_account_receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Price received — save the account and finish."""
+    raw = update.message.text.strip().replace("₹", "").replace(",", "").strip()
+    try:
+        price = float(raw)
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid price. Send a number like <code>150</code>.",
+            parse_mode="HTML"
+        )
+        return ADD_ACC_PRICE
+
+    if price <= 0:
+        await update.message.reply_text("❌ Price must be greater than 0. Try again.")
+        return ADD_ACC_PRICE
+
+    draft = context.user_data.get("new_account") or {}
+    country_id = draft.get("country_id")
+    phone = draft.get("phone")
+
+    if not country_id or not phone:
+        await update.message.reply_text(
+            "⚠️ Something went wrong (missing data). Please start again from the Admin panel."
+        )
+        context.user_data.pop("new_account", None)
+        return ConversationHandler.END
+
+    db = get_db(context)
+    account_id = await db.add_account(
+        country_id=country_id,
+        phone_number=phone,
+        price=price,
+        otp=draft.get("otp"),
+        two_fa=draft.get("two_fa"),
+        added_by=update.effective_user.id
+    )
+
+    await update.message.reply_text(
+        f"✅ <b>Account Added!</b>\n\n"
+        f"🆔 Account ID: <b>#{account_id}</b>\n"
+        f"🌍 Country: {draft.get('country_flag', '')} {draft.get('country_name', '')}\n"
+        f"📱 Phone: <code>{phone}</code>\n"
+        f"💰 Price: {format_price(price)}\n"
+        f"🔑 OTP: {'<code>' + draft['otp'] + '</code>' if draft.get('otp') else 'Not set'}\n"
+        f"🔐 2FA: {'<code>' + draft['two_fa'] + '</code>' if draft.get('two_fa') else 'Not set'}\n\n"
+        f"📦 Stock updated automatically!\n"
+        f"<i>Tap ➕ Add Account in /admin to add another.</i>",
+        parse_mode="HTML"
+    )
+    context.user_data.pop("new_account", None)
+    logger.info(f"Admin {update.effective_user.id} added account #{account_id} (interactive)")
+    return ConversationHandler.END
+
+
+@admin_required
+async def add_account_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the interactive add-account flow."""
+    context.user_data.pop("new_account", None)
+    msg = "❌ Add account cancelled.\n\nUse /admin to open the panel again."
+    if update.callback_query:
+        await update.callback_query.answer("Cancelled")
+        await update.callback_query.edit_message_text(msg)
+    else:
+        await update.message.reply_text(msg)
+    return ConversationHandler.END
 
 
 @admin_required
 async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /addaccount command."""
+    """Handle /addaccount command (power-user one-liner alternative)."""
     if not context.args:
         await update.message.reply_text(
             "Usage: <code>/addaccount country_id|phone|price|otp|2fa</code>\n"
@@ -828,6 +1018,40 @@ def register_admin_handlers(application: Application):
     # Admin panel command
     application.add_handler(CommandHandler("admin", admin_command))
 
+    # Interactive Add Account conversation (button-driven number/OTP/2FA flow).
+    # Registered first so its text states win over the generic text handler.
+    add_account_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(add_account_start, pattern=r"^admin_add_account$")
+        ],
+        states={
+            ADD_ACC_COUNTRY: [
+                CallbackQueryHandler(add_account_choose_country, pattern=r"^addacc_country_\d+$"),
+            ],
+            ADD_ACC_PHONE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_receive_phone),
+            ],
+            ADD_ACC_OTP: [
+                CallbackQueryHandler(add_account_skip_otp, pattern=r"^addacc_skip_otp$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_receive_otp),
+            ],
+            ADD_ACC_2FA: [
+                CallbackQueryHandler(add_account_skip_2fa, pattern=r"^addacc_skip_2fa$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_receive_2fa),
+            ],
+            ADD_ACC_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_receive_price),
+            ],
+        },
+        fallbacks=[
+            CallbackQueryHandler(add_account_cancel, pattern=r"^addacc_cancel$"),
+            CommandHandler("cancel", add_account_cancel),
+        ],
+        allow_reentry=True,
+        per_message=False,
+    )
+    application.add_handler(add_account_conv)
+
     # Admin action commands
     application.add_handler(CommandHandler("addcountry", add_country_command))
     application.add_handler(CommandHandler("addaccount", add_account_command))
@@ -838,7 +1062,6 @@ def register_admin_handlers(application: Application):
     application.add_handler(CommandHandler("reject", reject_command))
 
     # Admin panel callbacks
-    application.add_handler(CallbackQueryHandler(admin_add_account_callback, pattern=r"^admin_add_account$"))
     application.add_handler(CallbackQueryHandler(admin_edit_account_callback, pattern=r"^admin_edit_account$"))
     application.add_handler(CallbackQueryHandler(admin_remove_account_callback, pattern=r"^admin_remove_account$"))
     application.add_handler(CallbackQueryHandler(admin_stock_callback, pattern=r"^admin_stock$"))

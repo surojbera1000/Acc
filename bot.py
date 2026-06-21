@@ -72,9 +72,12 @@ def main():
         .build()
     )
 
-    # Register all handlers
-    register_user_handlers(application)
+    # Register all handlers.
+    # Admin handlers are registered first so the interactive "Add Account"
+    # ConversationHandler (group 0) takes priority over the generic text
+    # message handler in user_handlers when an admin is mid-flow.
     register_admin_handlers(application)
+    register_user_handlers(application)
     register_payment_handlers(application)
 
     # Start polling
