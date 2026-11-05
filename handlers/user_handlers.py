@@ -167,7 +167,7 @@ async def buy_account_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             f"You need <b>{format_price(account['price'] - user_balance)}</b> more.\n"
             f"Please deposit funds first."
         )
-        keyboard = Keyboards.back_button("buy_back")
+        keyboard = Keyboards.insufficient_balance()
     else:
         text += f"\n✅ You have enough balance to purchase."
         keyboard = Keyboards.confirm_purchase(account_id)
