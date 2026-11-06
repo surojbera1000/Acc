@@ -59,8 +59,11 @@ def main():
 
     from config import BOT_TOKEN as token
 
-    if not token or token == "YOUR_BOT_TOKEN_HERE":
-        logger.error("BOT_TOKEN is not set! Please set it in .env file.")
+    if not token or token in ("YOUR_BOT_TOKEN_HERE", "your_bot_token_here"):
+        logger.error(
+            "BOT_TOKEN is not set! Create a .env file (copy .env.example) "
+            "and set BOT_TOKEN to the token from @BotFather."
+        )
         return
 
     # Build application

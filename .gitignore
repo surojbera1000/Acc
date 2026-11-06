@@ -1,0 +1,24 @@
+# Environment / secrets
+.env
+
+# Database files
+*.db
+*.db-wal
+*.db-shm
+bot_database.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
