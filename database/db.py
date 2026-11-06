@@ -67,6 +67,8 @@ class Database:
                 gmail_added INTEGER DEFAULT 0,
                 two_fa_enabled INTEGER DEFAULT 0,
                 is_enabled INTEGER DEFAULT 1,
+                tg_user_id INTEGER,
+                session TEXT,
                 status TEXT DEFAULT 'available',
                 added_by INTEGER,
                 added_at TEXT DEFAULT (datetime('now')),
@@ -151,6 +153,8 @@ class Database:
             "gmail_added": "ALTER TABLE accounts ADD COLUMN gmail_added INTEGER DEFAULT 0",
             "two_fa_enabled": "ALTER TABLE accounts ADD COLUMN two_fa_enabled INTEGER DEFAULT 0",
             "is_enabled": "ALTER TABLE accounts ADD COLUMN is_enabled INTEGER DEFAULT 1",
+            "tg_user_id": "ALTER TABLE accounts ADD COLUMN tg_user_id INTEGER",
+            "session": "ALTER TABLE accounts ADD COLUMN session TEXT",
         }
         for column, ddl in new_columns.items():
             if column not in columns:
@@ -396,7 +400,8 @@ class Database:
         """Update account details."""
         valid_fields = ["phone_number", "otp", "two_fa", "price", "status",
                         "country_id", "category", "description", "name", "icon",
-                        "username", "gmail_added", "two_fa_enabled", "is_enabled"]
+                        "username", "gmail_added", "two_fa_enabled", "is_enabled",
+                        "tg_user_id", "session"]
         updates = {k: v for k, v in kwargs.items() if k in valid_fields}
 
         if not updates:
