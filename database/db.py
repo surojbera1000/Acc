@@ -509,22 +509,24 @@ class Database:
         await self._db.commit()
         return cursor.lastrowid
 
-    async def verify_deposit(self, deposit_id: int):
-        """Mark a deposit as verified."""
-        await self._db.execute(
+    async def verify_deposit(self, deposit_id: int) -> bool:
+        """Mark a pending deposit as verified. Returns False if it was not pending."""
+        cursor = await self._db.execute(
             """UPDATE deposits SET status = 'verified', verified_at = datetime('now')
-               WHERE id = ?""",
+               WHERE id = ? AND status = 'pending'""",
             (deposit_id,)
         )
         await self._db.commit()
+        return cursor.rowcount > 0
 
-    async def reject_deposit(self, deposit_id: int):
-        """Mark a deposit as rejected."""
-        await self._db.execute(
-            "UPDATE deposits SET status = 'rejected' WHERE id = ?",
+    async def reject_deposit(self, deposit_id: int) -> bool:
+        """Mark a pending deposit as rejected. Returns False if it was not pending."""
+        cursor = await self._db.execute(
+            "UPDATE deposits SET status = 'rejected' WHERE id = ? AND status = 'pending'",
             (deposit_id,)
         )
         await self._db.commit()
+        return cursor.rowcount > 0
 
     async def get_pending_deposits(self) -> List[Dict]:
         """Get all pending deposits (admin view)."""
