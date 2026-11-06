@@ -48,26 +48,8 @@ class Keyboards:
         )
 
     # ──────────────────────────────────────────
-    # ADMIN PANEL
+    # ADMIN
     # ──────────────────────────────────────────
-
-    @staticmethod
-    def admin_menu():
-        """Admin panel inline keyboard (grouped & natively colour-coded)."""
-        keyboard = [
-            [InlineKeyboardButton("🟢 Add Account", callback_data="admin_add_account", style=SUCCESS),
-             InlineKeyboardButton("🟡 Edit Account", callback_data="admin_edit_account", style=PRIMARY)],
-            [InlineKeyboardButton("🔴 Remove Account", callback_data="admin_remove_account", style=DANGER),
-             InlineKeyboardButton("🔵 Stock Status", callback_data="admin_stock", style=PRIMARY)],
-            [InlineKeyboardButton("🧾 View Orders", callback_data="admin_orders", style=PRIMARY),
-             InlineKeyboardButton("📈 Statistics", callback_data="admin_stats", style=PRIMARY)],
-            [InlineKeyboardButton("🌍 Countries", callback_data="admin_countries", style=PRIMARY),
-             InlineKeyboardButton("💳 Pending Deposits", callback_data="admin_deposits", style=PRIMARY)],
-            [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast", style=PRIMARY),
-             InlineKeyboardButton("⚙️ Settings", callback_data="admin_settings", style=PRIMARY)],
-            [InlineKeyboardButton("✖️ Close Panel", callback_data="admin_close", style=DANGER)],
-        ]
-        return InlineKeyboardMarkup(keyboard)
 
     # ──────────────────────────────────────────
     # BUY FLOW
@@ -219,25 +201,6 @@ class Keyboards:
     # ──────────────────────────────────────────
     # ADMIN ACCOUNT ACTIONS
     # ──────────────────────────────────────────
-
-    @staticmethod
-    def admin_account_actions(account_id):
-        """Admin actions for a specific account."""
-        keyboard = [
-            [InlineKeyboardButton("🟡 Edit", callback_data=f"edit_acc_{account_id}", style=PRIMARY),
-             InlineKeyboardButton("🔴 Delete", callback_data=f"delete_acc_{account_id}", style=DANGER)],
-            [InlineKeyboardButton("⬅️ Back", callback_data="admin_stock", style=PRIMARY)],
-        ]
-        return InlineKeyboardMarkup(keyboard)
-
-    @staticmethod
-    def confirm_delete(account_id):
-        """Confirm account deletion."""
-        keyboard = [
-            [InlineKeyboardButton("🔴 Yes, Delete", callback_data=f"confirm_delete_{account_id}", style=DANGER),
-             InlineKeyboardButton("⚫ No, Cancel", callback_data="admin_stock", style=PRIMARY)],
-        ]
-        return InlineKeyboardMarkup(keyboard)
 
     # ──────────────────────────────────────────
     # SHARED / NAVIGATION

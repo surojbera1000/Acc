@@ -381,10 +381,19 @@ class Database:
         )
         await self._db.commit()
 
-    async def delete_account(self, account_id: int):
-        """Delete an account from stock."""
-        await self._db.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+    async def delete_account(self, account_id: int) -> bool:
+        """Remove an unsold account from stock.
+
+        Soft delete (status = 'removed'): a hard DELETE fails with a FOREIGN KEY
+        error whenever an old failed/refunded order still references the account.
+        Returns False if the account was not available.
+        """
+        cursor = await self._db.execute(
+            "UPDATE accounts SET status = 'removed' WHERE id = ? AND status = 'available'",
+            (account_id,)
+        )
         await self._db.commit()
+        return cursor.rowcount > 0
 
     async def get_stock_summary(self) -> List[Dict]:
         """Get stock summary by country."""
@@ -663,3 +672,140 @@ class Database:
         stats["total_deposits"] = row["total"]
 
         return stats
+
+    # ═══════════════════════════════════════════
+    # ADMIN PANEL QUERIES
+    # ═══════════════════════════════════════════
+
+    async def _one(self, query: str, params=()) -> Dict:
+        cursor = await self._db.execute(query, params)
+        row = await cursor.fetchone()
+        return dict(row) if row else {}
+
+    async def _all(self, query: str, params=()) -> List[Dict]:
+        cursor = await self._db.execute(query, params)
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_country_overview(self) -> List[Dict]:
+        """All countries (active and hidden) with available / sold counts."""
+        return await self._all("""
+            SELECT c.*,
+                   COUNT(CASE WHEN a.status = 'available' THEN 1 END) AS available,
+                   COUNT(CASE WHEN a.status = 'sold' THEN 1 END) AS sold
+            FROM countries c
+            LEFT JOIN accounts a ON a.country_id = c.id
+            GROUP BY c.id
+            ORDER BY c.name
+        """)
+
+    async def set_country_active(self, country_id: int, active: bool):
+        await self._db.execute(
+            "UPDATE countries SET is_active = ? WHERE id = ?", (1 if active else 0, country_id)
+        )
+        await self._db.commit()
+
+    async def count_available_accounts(self, country_id: int) -> int:
+        row = await self._one(
+            "SELECT COUNT(*) AS n FROM accounts WHERE country_id = ? AND status = 'available'",
+            (country_id,)
+        )
+        return row["n"]
+
+    async def get_available_accounts_page(self, country_id: int, limit: int, offset: int) -> List[Dict]:
+        return await self._all(
+            """SELECT * FROM accounts WHERE country_id = ? AND status = 'available'
+               ORDER BY id DESC LIMIT ? OFFSET ?""",
+            (country_id, limit, offset)
+        )
+
+    # ── Users ──
+
+    async def find_user(self, query: str) -> Optional[Dict]:
+        """Find a user by numeric ID or @username."""
+        query = query.strip()
+        if query.lstrip("-").isdigit():
+            return await self.get_user(int(query))
+        row = await self._one(
+            "SELECT * FROM users WHERE LOWER(username) = LOWER(?)", (query.lstrip("@"),)
+        )
+        return row or None
+
+    async def get_recent_users(self, limit: int = 8) -> List[Dict]:
+        return await self._all(
+            "SELECT * FROM users ORDER BY joined_at DESC LIMIT ?", (limit,)
+        )
+
+    async def get_user_counts(self) -> Dict:
+        return await self._one(
+            "SELECT COUNT(*) AS total, COALESCE(SUM(is_banned), 0) AS banned FROM users"
+        )
+
+    async def get_user_order_count(self, user_id: int) -> int:
+        row = await self._one(
+            "SELECT COUNT(*) AS n FROM orders WHERE user_id = ? AND status = 'completed'",
+            (user_id,)
+        )
+        return row["n"]
+
+    async def get_broadcast_user_ids(self) -> List[int]:
+        rows = await self._all("SELECT user_id FROM users WHERE is_banned = 0")
+        return [r["user_id"] for r in rows]
+
+    async def set_banned(self, user_id: int, banned: bool):
+        await self._db.execute(
+            "UPDATE users SET is_banned = ? WHERE user_id = ?", (1 if banned else 0, user_id)
+        )
+        await self._db.commit()
+
+    async def is_banned(self, user_id: int) -> bool:
+        row = await self._one("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
+        return bool(row.get("is_banned"))
+
+    # ── Reports ──
+
+    async def get_sales_report(self) -> Dict:
+        """Sales figures for today / 7 days / 30 days / all time (Indian time, UTC+5:30)."""
+        ist_today = "date('now', '+5 hours', '+30 minutes')"
+        ist = "date({col}, '+5 hours', '+30 minutes')"
+        report = {}
+        for key, cond in (
+            ("today", f"{ist.format(col='completed_at')} = {ist_today}"),
+            ("week", f"{ist.format(col='completed_at')} > date({ist_today}, '-7 days')"),
+            ("month", f"{ist.format(col='completed_at')} > date({ist_today}, '-30 days')"),
+            ("all", "1 = 1"),
+        ):
+            report[key] = await self._one(
+                f"""SELECT COUNT(*) AS orders, COALESCE(SUM(amount), 0) AS revenue
+                    FROM orders WHERE status = 'completed' AND {cond}"""
+            )
+        report["deposits_today"] = (await self._one(
+            f"""SELECT COALESCE(SUM(amount), 0) AS total FROM deposits
+                WHERE status = 'verified' AND {ist.format(col='verified_at')} = {ist_today}"""
+        ))["total"]
+        report["new_users_today"] = (await self._one(
+            f"SELECT COUNT(*) AS n FROM users WHERE {ist.format(col='joined_at')} = {ist_today}"
+        ))["n"]
+        report["pending_deposits"] = (await self._one(
+            "SELECT COUNT(*) AS n FROM deposits WHERE status = 'pending'"
+        ))["n"]
+        report["available_stock"] = (await self._one(
+            "SELECT COUNT(*) AS n FROM accounts WHERE status = 'available'"
+        ))["n"]
+        report["total_users"] = (await self._one("SELECT COUNT(*) AS n FROM users"))["n"]
+        report["wallet_total"] = (await self._one(
+            "SELECT COALESCE(SUM(balance), 0) AS total FROM users"
+        ))["total"]
+        report["top_countries"] = await self._all(
+            f"""SELECT c.flag, c.name, COUNT(*) AS orders, SUM(o.amount) AS revenue
+                FROM orders o
+                JOIN accounts a ON o.account_id = a.id
+                JOIN countries c ON a.country_id = c.id
+                WHERE o.status = 'completed'
+                  AND {ist.format(col='o.completed_at')} > date({ist_today}, '-30 days')
+                GROUP BY c.id ORDER BY revenue DESC LIMIT 5"""
+        )
+        return report
+
+    async def backup_to(self, path: str):
+        """Write a consistent copy of the database to ``path`` (safe while running)."""
+        await self._db.execute("VACUUM INTO ?", (path,))

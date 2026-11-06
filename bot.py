@@ -8,7 +8,9 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 from config import BOT_TOKEN
 from database import Database
-from handlers import register_user_handlers, register_admin_handlers, register_payment_handlers
+from handlers import (
+    register_user_handlers, register_admin_handlers, register_payment_handlers, register_admin_panel
+)
 
 # Load environment variables
 load_dotenv()
@@ -80,6 +82,7 @@ def main():
     register_user_handlers(application)
     register_admin_handlers(application)
     register_payment_handlers(application)
+    register_admin_panel(application)
 
     # Start polling
     logger.info("Bot is starting...")

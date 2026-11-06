@@ -11,15 +11,17 @@ A fully-featured Telegram bot for selling accounts with automatic delivery, UPI 
 - **Wallet** - Check balance, total deposits, and spending stats
 - **Help** - Instructions and support contact
 
-### Admin Side
-- **Add Accounts** - Single or bulk account addition
-- **Edit Accounts** - Update phone, OTP, 2FA, or price
-- **Remove Accounts** - Delete unsold accounts from stock
-- **Stock Status** - Country-wise stock tracking
-- **View Orders** - Monitor all user transactions
-- **Statistics** - Revenue, users, and sales data
-- **Manage Countries** - Add/manage country categories
-- **Deposit Verification** - Approve/reject pending deposits
+### Admin Side (button-driven dashboard, `/admin`)
+- **Live Dashboard** - Today's sales, deposits, new users, stock and pending deposits at a glance
+- **Add Stock** - Single (`/addaccount`) or bulk (`/bulkadd`) with country IDs listed
+- **Manage Stock** - Browse by country, edit price / type / OTP / 2FA, or delete accounts with buttons
+- **Deposits** - Approve / reject pending UPI deposits (button turns red when some are waiting)
+- **Orders** - Latest 15 orders with buyer and status
+- **Sales Report** - Today / 7 days / 30 days / all time, wallet totals, top countries
+- **Users** - Find by ID or @username, add / deduct balance (user is notified), ban / unban
+- **Countries** - Show / hide a country in the store with one tap
+- **Broadcast** - Send any message (text, photo, video, file) to all users with a delivery report
+- **Backup** - Get the database file in chat (`/backup`)
 
 ### Safety & Automation
 - Auto-refund on failed delivery
@@ -92,7 +94,8 @@ python bot.py
 | `/wallet` | Check wallet balance |
 | `/deposit` | Deposit funds via UPI |
 | `/history` | View order history |
-| `/help` | Get help & support |
+| `/profile` | View your profile |
+| `/support` | Chat with support |
 
 ### Admin Commands
 | Command | Description |
@@ -105,6 +108,9 @@ python bot.py
 | `/removeaccount ID` | Remove an account |
 | `/approve DEPOSIT_ID` | Approve a deposit |
 | `/reject DEPOSIT_ID` | Reject a deposit |
+| `/user ID or @username` | Open a user's profile |
+| `/backup` | Get a database backup file |
+| `/cancel` | Cancel the current admin input |
 
 ---
 
@@ -154,7 +160,8 @@ telegram-account-bot/
 ├── handlers/
 │   ├── __init__.py
 │   ├── user_handlers.py   # User-facing handlers
-│   ├── admin_handlers.py  # Admin panel handlers
+│   ├── admin_handlers.py  # Admin commands + deposit approval
+│   ├── admin_panel.py     # Admin dashboard (stock, users, broadcast, reports, backup)
 │   └── payment_handlers.py # Deposit/payment handlers
 ├── payments/
 │   ├── __init__.py
