@@ -1,16 +1,17 @@
 """Payment/Deposit handlers for the Telegram Account Bot."""
 import logging
+import math
 import random
 import string
 from telegram import Update
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    ContextTypes, ConversationHandler, MessageHandler, filters
+    Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler,
+    ContextTypes, MessageHandler, filters
 )
 
-from config import UPI_ID, UPI_NAME, CURRENCY_SYMBOL, SUPPORT_CONTACT, ADMIN_IDS
+from config import UPI_ID, UPI_NAME, SUPPORT_CONTACT, ADMIN_IDS
 from database import Database
-from utils.keyboards import Keyboards
+from utils.keyboards import Keyboards, MAIN_MENU_BUTTONS
 from utils.helpers import format_price
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,8 @@ async def handle_custom_amount(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         amount = float(text)
+        if not math.isfinite(amount):
+            raise ValueError("non-finite amount")
     except ValueError:
         await update.message.reply_text(
             "❌ Invalid amount. Please enter a number.\n"
@@ -318,13 +321,18 @@ async def notify_admins_new_deposit(context: ContextTypes.DEFAULT_TYPE,
 async def cancel_deposit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle deposit cancellation."""
     query = update.callback_query
-    await query.answer("Deposit cancelled.")
-
     deposit_id = int(query.data.split("_")[-1])
     db = get_db(context)
 
-    # Mark deposit as rejected/cancelled
-    await db.reject_deposit(deposit_id)
+    # Only the owner can cancel, and only while the deposit is still pending
+    deposit = await db.get_deposit(deposit_id)
+    if not deposit or deposit["user_id"] != query.from_user.id:
+        await query.answer("Deposit not found.", show_alert=True)
+        return
+    if not await db.reject_deposit(deposit_id):
+        await query.answer(f"Deposit is already {deposit['status']}.", show_alert=True)
+        return
+    await query.answer("Deposit cancelled.")
 
     # Clear user data
     context.user_data.pop("pending_deposit_id", None)
@@ -350,16 +358,28 @@ async def deposit_back_callback(update: Update, context: ContextTypes.DEFAULT_TY
 # ═══════════════════════════════════════════
 
 async def payment_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages that might be payment-related."""
-    # Check if user is in UTR input mode
+    """Handle text messages that might be payment-related.
+
+    Runs before the menu text handler. When the message is consumed here,
+    ApplicationHandlerStop prevents the menu handler from also replying.
+    """
+    awaiting = context.user_data.get("awaiting_utr") or context.user_data.get("awaiting_custom_amount")
+    if not awaiting:
+        return
+
+    # User pressed a menu button instead of typing: leave payment input mode
+    if update.message.text in MAIN_MENU_BUTTONS:
+        context.user_data["awaiting_utr"] = False
+        context.user_data["awaiting_custom_amount"] = False
+        return
+
     if context.user_data.get("awaiting_utr"):
-        return await handle_utr_input(update, context)
+        handled = await handle_utr_input(update, context)
+    else:
+        handled = await handle_custom_amount(update, context)
 
-    # Check if user is entering custom amount
-    if context.user_data.get("awaiting_custom_amount"):
-        return await handle_custom_amount(update, context)
-
-    return False
+    if handled:
+        raise ApplicationHandlerStop
 
 
 
@@ -389,11 +409,11 @@ def register_payment_handlers(application: Application):
         cancel_deposit_callback, pattern=r"^cancel_deposit_\d+$"
     ))
 
-    # Text handler for payment inputs (UTR, custom amount)
-    # This needs to be added with a lower group so it processes before the main text handler
+    # Text handler for payment inputs (UTR, custom amount).
+    # Group -1 runs before the menu text handler in group 0.
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, payment_text_handler),
-        group=1
+        group=-1
     )
 
     logger.info("Payment handlers registered.")

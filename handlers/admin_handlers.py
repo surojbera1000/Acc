@@ -2,11 +2,10 @@
 import logging
 from telegram import Update
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    ContextTypes, ConversationHandler, MessageHandler, filters
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes
 )
 
-from config import ADMIN_IDS, CURRENCY_SYMBOL
+from config import SUPPORT_CONTACT
 from database import Database
 from utils.keyboards import Keyboards
 from utils.helpers import format_price, is_admin
@@ -35,6 +34,12 @@ def admin_required(func):
             else:
                 await update.message.reply_text("⛔ You don't have admin access.")
             return
+        # accounts.added_by has a FOREIGN KEY to users, so the admin must exist there
+        user = update.effective_user
+        await get_db(context).get_or_create_user(
+            user_id=user.id, username=user.username,
+            first_name=user.first_name, last_name=user.last_name
+        )
         return await func(update, context)
     return wrapper
 
@@ -383,7 +388,8 @@ async def bulk_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    lines = update.message.text.replace("/bulkadd ", "").strip().split("\n")
+    body = update.message.text.split(maxsplit=1)
+    lines = body[1].strip().split("\n") if len(body) > 1 else []
     if len(lines) < 2:
         await update.message.reply_text("❌ Need at least header line + 1 account.")
         return
@@ -647,8 +653,10 @@ async def approve_deposit_callback(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text(f"⚠️ Deposit #{deposit_id} is already {deposit['status']}.")
         return
 
-    # Verify deposit and credit user
-    await db.verify_deposit(deposit_id)
+    # Verify deposit and credit user (atomic: only succeeds while still pending)
+    if not await db.verify_deposit(deposit_id):
+        await query.edit_message_text(f"⚠ Deposit #{deposit_id} was already processed.")
+        return
 
     # Credit user balance
     new_balance = await db.update_balance(deposit["user_id"], deposit["amount"], "add")
@@ -698,7 +706,9 @@ async def reject_deposit_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("❌ Deposit not found.")
         return
 
-    await db.reject_deposit(deposit_id)
+    if not await db.reject_deposit(deposit_id):
+        await query.edit_message_text(f"⚠ Deposit #{deposit_id} is already {deposit['status']}.")
+        return
 
     await query.edit_message_text(
         f"❌ <b>Deposit #{deposit_id} Rejected</b>\n\n"
@@ -714,7 +724,7 @@ async def reject_deposit_callback(update: Update, context: ContextTypes.DEFAULT_
             f"❌ <b>Deposit Rejected</b>\n\n"
             f"Your deposit of {format_price(deposit['amount'])} was not approved.\n"
             f"Please contact support if you believe this is an error.\n"
-            f"Support: {ADMIN_IDS}",
+            f"Support: {SUPPORT_CONTACT}",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -750,7 +760,9 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Deposit #{deposit_id} is already {deposit['status']}.")
         return
 
-    await db.verify_deposit(deposit_id)
+    if not await db.verify_deposit(deposit_id):
+        await update.message.reply_text(f"⚠ Deposit #{deposit_id} was already processed.")
+        return
     new_balance = await db.update_balance(deposit["user_id"], deposit["amount"], "add")
     await db.add_to_total_deposits(deposit["user_id"], deposit["amount"])
 
@@ -798,7 +810,9 @@ async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Deposit #{deposit_id} not found.")
         return
 
-    await db.reject_deposit(deposit_id)
+    if not await db.reject_deposit(deposit_id):
+        await update.message.reply_text(f"⚠ Deposit #{deposit_id} is already {deposit['status']}.")
+        return
     await update.message.reply_text(f"❌ Deposit #{deposit_id} rejected.")
 
     try:

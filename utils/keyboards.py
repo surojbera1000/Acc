@@ -2,6 +2,9 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 
 
+MAIN_MENU_BUTTONS = {"🛒 Buy Account", "📜 Order History", "💰 Deposit", "👛 Wallet", "❓ Help"}
+
+
 class Keyboards:
     """All keyboard layouts used in the bot."""
 
