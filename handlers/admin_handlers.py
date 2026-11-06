@@ -1,4 +1,5 @@
 """Admin panel handlers for the Telegram Account Bot."""
+import html
 import logging
 from telegram import Update
 from telegram.ext import (
@@ -6,9 +7,9 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, MessageHandler, filters
 )
 
-from config import ADMIN_IDS, CURRENCY_SYMBOL
+from config import ADMIN_IDS, CURRENCY_SYMBOL, SUPPORT_CONTACT
 from database import Database
-from utils.keyboards import Keyboards
+from utils.keyboards import Keyboards, PRIMARY, SUCCESS, DANGER
 from utils.helpers import format_price, is_admin
 
 logger = logging.getLogger(__name__)
@@ -35,183 +36,19 @@ def admin_required(func):
             else:
                 await update.message.reply_text("⛔ You don't have admin access.")
             return
+        # accounts.added_by has a FOREIGN KEY to users, so the admin must exist there
+        user = update.effective_user
+        await get_db(context).get_or_create_user(
+            user_id=user.id, username=user.username,
+            first_name=user.first_name, last_name=user.last_name
+        )
         return await func(update, context)
     return wrapper
-
-
-
-# ═══════════════════════════════════════════
-# ADMIN PANEL
-# ═══════════════════════════════════════════
-
-@admin_required
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /admin command - show admin panel."""
-    text = (
-        "🔧 <b>Admin Panel</b>\n\n"
-        "Select an option below:"
-    )
-    if update.callback_query:
-        await update.callback_query.edit_message_text(
-            text, reply_markup=Keyboards.admin_menu(), parse_mode="HTML"
-        )
-    else:
-        await update.message.reply_text(
-            text, reply_markup=Keyboards.admin_menu(), parse_mode="HTML"
-        )
-
-
-@admin_required
-async def admin_close_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Close admin panel."""
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text("✅ Admin panel closed.")
-
-
-
-# ═══════════════════════════════════════════
-# STOCK STATUS
-# ═══════════════════════════════════════════
-
-@admin_required
-async def admin_stock_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show stock status."""
-    query = update.callback_query
-    await query.answer()
-    db = get_db(context)
-
-    stock = await db.get_stock_summary()
-
-    if not stock:
-        text = (
-            "📊 <b>Stock Status</b>\n\n"
-            "No countries or accounts added yet.\n"
-            "Use 'Manage Countries' to add countries first."
-        )
-    else:
-        text = "📊 <b>Stock Status</b>\n\n"
-        total_available = 0
-        total_sold = 0
-        for item in stock:
-            flag = item.get("flag", "")
-            text += (
-                f"{flag} <b>{item['name']}</b> ({item['code']})\n"
-                f"   ├ Available: {item['available']}\n"
-                f"   ├ Sold: {item['sold']}\n"
-                f"   └ Total: {item['total']}\n\n"
-            )
-            total_available += item["available"]
-            total_sold += item["sold"]
-
-        text += (
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📦 Total Available: <b>{total_available}</b>\n"
-            f"🛒 Total Sold: <b>{total_sold}</b>"
-        )
-
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
-    ])
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-
-
-# ═══════════════════════════════════════════
-# STATISTICS
-# ═══════════════════════════════════════════
-
-@admin_required
-async def admin_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show bot statistics."""
-    query = update.callback_query
-    await query.answer()
-    db = get_db(context)
-
-    stats = await db.get_stats()
-
-    text = (
-        "📈 <b>Bot Statistics</b>\n\n"
-        f"👥 Total Users: <b>{stats['total_users']}</b>\n"
-        f"📦 Available Accounts: <b>{stats['available_accounts']}</b>\n"
-        f"🛒 Sold Accounts: <b>{stats['sold_accounts']}</b>\n"
-        f"✅ Completed Orders: <b>{stats['completed_orders']}</b>\n"
-        f"💰 Total Revenue: <b>{format_price(stats['total_revenue'])}</b>\n"
-        f"💳 Total Deposits: <b>{format_price(stats['total_deposits'])}</b>\n"
-    )
-
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
-    ])
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-
-
-# ═══════════════════════════════════════════
-# VIEW ORDERS (Admin)
-# ═══════════════════════════════════════════
-
-@admin_required
-async def admin_orders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show recent orders."""
-    query = update.callback_query
-    await query.answer()
-    db = get_db(context)
-
-    orders = await db.get_all_orders(limit=15)
-
-    if not orders:
-        text = "👥 <b>Recent Orders</b>\n\nNo orders yet."
-    else:
-        text = "👥 <b>Recent Orders</b>\n\n"
-        for order in orders:
-            username = order.get("username", "") or order.get("first_name", "Unknown")
-            status_emoji = {"completed": "✅", "pending": "⏳", "failed": "❌", "refunded": "💰"}
-            emoji = status_emoji.get(order["status"], "❓")
-            text += (
-                f"{emoji} #{order['id']} | @{username} | "
-                f"{order['country_name']} | {format_price(order['amount'])} | "
-                f"{order['status']}\n"
-            )
-
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
-    ])
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
-
 
 
 # ═══════════════════════════════════════════
 # MANAGE COUNTRIES
 # ═══════════════════════════════════════════
-
-@admin_required
-async def admin_countries_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show country management."""
-    query = update.callback_query
-    await query.answer()
-    db = get_db(context)
-
-    countries = await db.get_countries(active_only=False)
-
-    text = "🌍 <b>Manage Countries</b>\n\n"
-    if countries:
-        for c in countries:
-            status = "✅" if c["is_active"] else "❌"
-            text += f"{status} {c['flag']} {c['name']} ({c['code']})\n"
-    else:
-        text += "No countries added yet.\n"
-
-    text += "\n<i>To add a country, send:</i>\n<code>/addcountry Name|CODE|Flag</code>\n"
-    text += "<i>Example:</i> <code>/addcountry India|IN|🇮🇳</code>"
-
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
-    ])
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 
 @admin_required
@@ -253,51 +90,9 @@ async def add_country_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
 
-
 # ═══════════════════════════════════════════
 # ADD ACCOUNT
 # ═══════════════════════════════════════════
-
-@admin_required
-async def admin_add_account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start add account flow."""
-    query = update.callback_query
-    await query.answer()
-    db = get_db(context)
-
-    countries = await db.get_countries()
-
-    if not countries:
-        await query.edit_message_text(
-            "❌ No countries available!\n"
-            "Add a country first using:\n"
-            "<code>/addcountry Name|CODE|Flag</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    text = (
-        "➕ <b>Add New Account</b>\n\n"
-        "Send account details in this format:\n\n"
-        "<code>/addaccount country_id|phone|price|otp|2fa</code>\n\n"
-        "<b>Parameters:</b>\n"
-        "• country_id - Country ID number\n"
-        "• phone - Phone number\n"
-        "• price - Price in ₹\n"
-        "• otp - OTP code (optional, use - for none)\n"
-        "• 2fa - 2FA details (optional, use - for none)\n\n"
-        "<b>Example:</b>\n"
-        "<code>/addaccount 1|+919876543210|150|1234|backup_code_here</code>\n\n"
-        "<b>Available Countries:</b>\n"
-    )
-    for c in countries:
-        text += f"  {c['flag']} {c['name']} - ID: <b>{c['id']}</b>\n"
-
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
-    ])
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 
 @admin_required
@@ -325,6 +120,7 @@ async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         price = float(parts[2].strip())
         otp = parts[3].strip() if len(parts) > 3 and parts[3].strip() != "-" else None
         two_fa = parts[4].strip() if len(parts) > 4 and parts[4].strip() != "-" else None
+        category = parts[5].strip() if len(parts) > 5 and parts[5].strip() != "-" else "Standard"
     except (ValueError, IndexError):
         await update.message.reply_text("❌ Invalid values. Check format and try again.")
         return
@@ -337,12 +133,22 @@ async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Country ID {country_id} not found.")
         return
 
+    # Prevent duplicate phone numbers within a country
+    if await db.account_exists(country_id, phone):
+        await update.message.reply_text(
+            f"⚠️ Account with phone <code>{phone}</code> already exists for "
+            f"{country['flag']} {country['name']}. Skipped.",
+            parse_mode="HTML"
+        )
+        return
+
     account_id = await db.add_account(
         country_id=country_id,
         phone_number=phone,
         price=price,
         otp=otp,
         two_fa=two_fa,
+        category=category,
         added_by=update.effective_user.id
     )
 
@@ -350,6 +156,7 @@ async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"✅ <b>Account Added!</b>\n\n"
         f"🆔 Account ID: <b>#{account_id}</b>\n"
         f"🌍 Country: {country['flag']} {country['name']}\n"
+        f"🏷 Type: <b>{category}</b>\n"
         f"📱 Phone: <code>{phone}</code>\n"
         f"💰 Price: {format_price(price)}\n"
         f"🔑 OTP: {'Set' if otp else 'Not set'}\n"
@@ -358,7 +165,6 @@ async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode="HTML"
     )
     logger.info(f"Admin {update.effective_user.id} added account #{account_id}")
-
 
 
 # ═══════════════════════════════════════════
@@ -371,31 +177,38 @@ async def bulk_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
             "📦 <b>Bulk Add Accounts</b>\n\n"
-            "Send multiple accounts, one per line:\n"
-            "<code>/bulkadd country_id|price\n"
-            "phone1|otp1|2fa1\n"
-            "phone2|otp2|2fa2\n"
-            "phone3|otp3|2fa3</code>\n\n"
-            "First line: country_id and price\n"
-            "Following lines: phone|otp|2fa for each account\n"
-            "Use - for empty otp/2fa fields.",
+            "Header line sets the country and default type.\n"
+            "Each following line is one account with its own price:\n\n"
+            "<code>/bulkadd country_id|category\n"
+            "phone1|price1|otp1|2fa1\n"
+            "phone2|price2|otp2|2fa2</code>\n\n"
+            "• <b>category</b> is optional (defaults to Standard)\n"
+            "• <b>price</b> is per-account; if omitted, uses the previous line's price\n"
+            "• Use <code>-</code> for empty otp/2fa fields\n"
+            "• Duplicate phone numbers are skipped automatically\n\n"
+            "<b>Example:</b>\n"
+            "<code>/bulkadd 1|Fresh\n"
+            "+919876543210|150|1234|-\n"
+            "+919876543211|150|5678|backup2\n"
+            "+919876543212|200|-|-</code>",
             parse_mode="HTML"
         )
         return
 
-    lines = update.message.text.replace("/bulkadd ", "").strip().split("\n")
+    body = update.message.text.split(maxsplit=1)
+    lines = body[1].strip().split("\n") if len(body) > 1 else []
     if len(lines) < 2:
         await update.message.reply_text("❌ Need at least header line + 1 account.")
         return
 
-    # Parse header
+    # Parse header: country_id|category(optional)
     header = lines[0].split("|")
     try:
         country_id = int(header[0].strip())
-        price = float(header[1].strip())
     except (ValueError, IndexError):
-        await update.message.reply_text("❌ Invalid header. Format: country_id|price")
+        await update.message.reply_text("❌ Invalid header. Format: country_id|category")
         return
+    category = header[1].strip() if len(header) > 1 and header[1].strip() else "Standard"
 
     db = get_db(context)
     country = await db.get_country(country_id)
@@ -404,17 +217,39 @@ async def bulk_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     added = 0
+    skipped = 0
     errors = 0
+    last_price = None
     for line in lines[1:]:
         parts = line.strip().split("|")
         if not parts or not parts[0].strip():
             continue
         phone = parts[0].strip()
-        otp = parts[1].strip() if len(parts) > 1 and parts[1].strip() != "-" else None
-        two_fa = parts[2].strip() if len(parts) > 2 and parts[2].strip() != "-" else None
+
+        # Per-line price (falls back to previous line's price)
+        if len(parts) > 1 and parts[1].strip() and parts[1].strip() != "-":
+            try:
+                price = float(parts[1].strip())
+            except ValueError:
+                errors += 1
+                continue
+        elif last_price is not None:
+            price = last_price
+        else:
+            errors += 1
+            continue
+        last_price = price
+
+        otp = parts[2].strip() if len(parts) > 2 and parts[2].strip() != "-" else None
+        two_fa = parts[3].strip() if len(parts) > 3 and parts[3].strip() != "-" else None
+
+        if await db.account_exists(country_id, phone):
+            skipped += 1
+            continue
 
         try:
-            await db.add_account(country_id, phone, price, otp, two_fa, update.effective_user.id)
+            await db.add_account(country_id, phone, price, otp, two_fa,
+                                 update.effective_user.id, category=category)
             added += 1
         except Exception as e:
             errors += 1
@@ -422,45 +257,18 @@ async def bulk_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"📦 <b>Bulk Add Complete</b>\n\n"
-        f"✅ Added: {added} accounts\n"
+        f"✅ Added: {added}\n"
+        f"⏭ Skipped (duplicate): {skipped}\n"
         f"❌ Errors: {errors}\n"
         f"🌍 Country: {country['flag']} {country['name']}\n"
-        f"💰 Price each: {format_price(price)}",
+        f"🏷 Type: <b>{category}</b>",
         parse_mode="HTML"
     )
-
 
 
 # ═══════════════════════════════════════════
 # EDIT ACCOUNT
 # ═══════════════════════════════════════════
-
-@admin_required
-async def admin_edit_account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show edit account instructions."""
-    query = update.callback_query
-    await query.answer()
-
-    text = (
-        "📝 <b>Edit Account</b>\n\n"
-        "To edit an account, use:\n"
-        "<code>/editaccount ID|field|new_value</code>\n\n"
-        "<b>Editable fields:</b>\n"
-        "• phone_number\n"
-        "• otp\n"
-        "• two_fa\n"
-        "• price\n\n"
-        "<b>Examples:</b>\n"
-        "<code>/editaccount 5|price|200</code>\n"
-        "<code>/editaccount 5|otp|5678</code>\n"
-        "<code>/editaccount 5|phone_number|+919999999999</code>"
-    )
-
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
-    ])
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 
 @admin_required
@@ -516,30 +324,9 @@ async def edit_account_command(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
-
 # ═══════════════════════════════════════════
 # REMOVE ACCOUNT
 # ═══════════════════════════════════════════
-
-@admin_required
-async def admin_remove_account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show remove account instructions."""
-    query = update.callback_query
-    await query.answer()
-
-    text = (
-        "🗑 <b>Remove Account</b>\n\n"
-        "To remove an account, use:\n"
-        "<code>/removeaccount ID</code>\n\n"
-        "⚠️ This action cannot be undone!\n"
-        "Only available (unsold) accounts can be removed."
-    )
-
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
-    ])
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 
 @admin_required
@@ -568,14 +355,15 @@ async def remove_account_command(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
 
-    await db.delete_account(account_id)
+    if not await db.delete_account(account_id):
+        await update.message.reply_text(f"⚠ Account #{account_id} is not available.")
+        return
     await update.message.reply_text(
         f"✅ Account <b>#{account_id}</b> has been removed.\n"
         f"📦 Stock updated.",
         parse_mode="HTML"
     )
     logger.info(f"Admin {update.effective_user.id} removed account #{account_id}")
-
 
 
 # ═══════════════════════════════════════════
@@ -600,9 +388,9 @@ async def admin_deposits_callback(update: Update, context: ContextTypes.DEFAULT_
             text += (
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🆔 Deposit #{dep['id']}\n"
-                f"👤 @{username} (ID: {dep['user_id']})\n"
+                f"👤 {html.escape(str(username))} (ID: <code>{dep['user_id']}</code>)\n"
                 f"💰 Amount: {format_price(dep['amount'])}\n"
-                f"📝 UPI Ref: <code>{dep.get('upi_reference', 'N/A')}</code>\n"
+                f"📝 UTR: <code>{html.escape(dep.get('upi_reference') or 'N/A')}</code>\n"
                 f"📅 {dep['created_at'][:16]}\n"
             )
 
@@ -616,14 +404,14 @@ async def admin_deposits_callback(update: Update, context: ContextTypes.DEFAULT_
         keyboard_rows.append([
             InlineKeyboardButton(
                 f"✅ #{dep['id']} ({format_price(dep['amount'])})",
-                callback_data=f"approve_deposit_{dep['id']}"
+                callback_data=f"approve_deposit_{dep['id']}", style=SUCCESS
             ),
             InlineKeyboardButton(
                 f"❌ #{dep['id']}",
-                callback_data=f"reject_deposit_{dep['id']}"
+                callback_data=f"reject_deposit_{dep['id']}", style=DANGER
             )
         ])
-    keyboard_rows.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")])
+    keyboard_rows.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back", style=PRIMARY)])
     keyboard = InlineKeyboardMarkup(keyboard_rows)
 
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
@@ -714,12 +502,11 @@ async def reject_deposit_callback(update: Update, context: ContextTypes.DEFAULT_
             f"❌ <b>Deposit Rejected</b>\n\n"
             f"Your deposit of {format_price(deposit['amount'])} was not approved.\n"
             f"Please contact support if you believe this is an error.\n"
-            f"Support: {ADMIN_IDS}",
+            f"Support: {SUPPORT_CONTACT}",
             parse_mode="HTML"
         )
     except Exception as e:
         logger.warning(f"Could not notify user {deposit['user_id']}: {e}")
-
 
 
 # ═══════════════════════════════════════════
@@ -812,21 +599,12 @@ async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 
-@admin_required
-async def admin_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle back to admin panel."""
-    await admin_command(update, context)
-
-
-
 # ═══════════════════════════════════════════
 # REGISTER ADMIN HANDLERS
 # ═══════════════════════════════════════════
 
 def register_admin_handlers(application: Application):
     """Register all admin handlers."""
-    # Admin panel command
-    application.add_handler(CommandHandler("admin", admin_command))
 
     # Admin action commands
     application.add_handler(CommandHandler("addcountry", add_country_command))
@@ -837,17 +615,7 @@ def register_admin_handlers(application: Application):
     application.add_handler(CommandHandler("approve", approve_command))
     application.add_handler(CommandHandler("reject", reject_command))
 
-    # Admin panel callbacks
-    application.add_handler(CallbackQueryHandler(admin_add_account_callback, pattern=r"^admin_add_account$"))
-    application.add_handler(CallbackQueryHandler(admin_edit_account_callback, pattern=r"^admin_edit_account$"))
-    application.add_handler(CallbackQueryHandler(admin_remove_account_callback, pattern=r"^admin_remove_account$"))
-    application.add_handler(CallbackQueryHandler(admin_stock_callback, pattern=r"^admin_stock$"))
-    application.add_handler(CallbackQueryHandler(admin_orders_callback, pattern=r"^admin_orders$"))
-    application.add_handler(CallbackQueryHandler(admin_stats_callback, pattern=r"^admin_stats$"))
-    application.add_handler(CallbackQueryHandler(admin_countries_callback, pattern=r"^admin_countries$"))
     application.add_handler(CallbackQueryHandler(admin_deposits_callback, pattern=r"^admin_deposits$"))
-    application.add_handler(CallbackQueryHandler(admin_close_callback, pattern=r"^admin_close$"))
-    application.add_handler(CallbackQueryHandler(admin_back_callback, pattern=r"^admin_back$"))
 
     # Deposit approval/rejection callbacks
     application.add_handler(CallbackQueryHandler(approve_deposit_callback, pattern=r"^approve_deposit_\d+$"))

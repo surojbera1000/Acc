@@ -3,7 +3,8 @@ import logging
 from typing import Optional, Dict
 
 from database import Database
-from config import SUPPORT_CONTACT, ADMIN_IDS
+from config import SUPPORT_CONTACT, ADMIN_IDS, CURRENCY_SYMBOL
+from utils.helpers import build_delivery_text
 
 logger = logging.getLogger(__name__)
 
@@ -38,26 +39,8 @@ class DeliveryService:
             if not country:
                 raise DeliveryError("Country information not found")
 
-            # Build delivery message
-            delivery_text = (
-                f"✅ <b>Account Delivered!</b>\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📋 <b>Order #{order_id}</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🌍 Country: <b>{country['flag']} {country['name']}</b>\n"
-                f"📱 Phone: <code>{account['phone_number']}</code>\n"
-            )
-
-            if account.get("otp"):
-                delivery_text += f"🔑 OTP: <code>{account['otp']}</code>\n"
-
-            if account.get("two_fa"):
-                delivery_text += f"🔐 2FA: <code>{account['two_fa']}</code>\n"
-
-            delivery_text += (
-                f"\n━━━━━━━━━━━━━━━━━━━━━\n"
-                f"⚠️ <i>Save this information securely!</i>"
-            )
+            # Build delivery message (shared format: identity + security summary)
+            delivery_text = build_delivery_text(order_id, account, country)
 
             # Mark order as completed
             await self.db.complete_order(order_id)

@@ -8,7 +8,9 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 from config import BOT_TOKEN
 from database import Database
-from handlers import register_user_handlers, register_admin_handlers, register_payment_handlers
+from handlers import (
+    register_user_handlers, register_admin_handlers, register_payment_handlers, register_admin_panel
+)
 
 # Load environment variables
 load_dotenv()
@@ -37,7 +39,8 @@ async def post_init(application: Application):
         BotCommand("wallet", "Check your wallet balance"),
         BotCommand("deposit", "Deposit funds"),
         BotCommand("history", "View order history"),
-        BotCommand("help", "Get help & support"),
+        BotCommand("profile", "View your profile"),
+        BotCommand("support", "Chat with support"),
         BotCommand("admin", "Admin panel (admins only)"),
     ]
     await application.bot.set_my_commands(commands)
@@ -59,8 +62,11 @@ def main():
 
     from config import BOT_TOKEN as token
 
-    if not token or token == "YOUR_BOT_TOKEN_HERE":
-        logger.error("BOT_TOKEN is not set! Please set it in .env file.")
+    if not token or token in ("YOUR_BOT_TOKEN_HERE", "your_bot_token_here"):
+        logger.error(
+            "BOT_TOKEN is not set! Create a .env file (copy .env.example) "
+            "and set BOT_TOKEN to the token from @BotFather."
+        )
         return
 
     # Build application
@@ -76,6 +82,7 @@ def main():
     register_user_handlers(application)
     register_admin_handlers(application)
     register_payment_handlers(application)
+    register_admin_panel(application)
 
     # Start polling
     logger.info("Bot is starting...")

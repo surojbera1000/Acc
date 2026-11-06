@@ -21,6 +21,7 @@ class Database:
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
         await self._create_tables()
+        await self._run_migrations()
 
     async def close(self):
         """Close the database connection."""
@@ -58,6 +59,16 @@ class Database:
                 otp TEXT,
                 two_fa TEXT,
                 price REAL NOT NULL,
+                category TEXT DEFAULT 'Standard',
+                description TEXT,
+                name TEXT,
+                icon TEXT DEFAULT '',
+                username TEXT,
+                gmail_added INTEGER DEFAULT 0,
+                two_fa_enabled INTEGER DEFAULT 0,
+                is_enabled INTEGER DEFAULT 1,
+                tg_user_id INTEGER,
+                session TEXT,
                 status TEXT DEFAULT 'available',
                 added_by INTEGER,
                 added_at TEXT DEFAULT (datetime('now')),
@@ -117,6 +128,37 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id);
             CREATE INDEX IF NOT EXISTS idx_deposits_status ON deposits(status);
         """)
+        await self._db.commit()
+
+    async def _run_migrations(self):
+        """Apply schema migrations for existing databases (idempotent)."""
+        # accounts table: category / description columns (added for typed stock)
+        cursor = await self._db.execute("PRAGMA table_info(accounts)")
+        columns = {row["name"] for row in await cursor.fetchall()}
+
+        if "category" not in columns:
+            await self._db.execute(
+                "ALTER TABLE accounts ADD COLUMN category TEXT DEFAULT 'Standard'"
+            )
+        if "description" not in columns:
+            await self._db.execute(
+                "ALTER TABLE accounts ADD COLUMN description TEXT"
+            )
+
+        # Professional account fields (name/icon/username + security flags)
+        new_columns = {
+            "name": "ALTER TABLE accounts ADD COLUMN name TEXT",
+            "icon": "ALTER TABLE accounts ADD COLUMN icon TEXT DEFAULT ''",
+            "username": "ALTER TABLE accounts ADD COLUMN username TEXT",
+            "gmail_added": "ALTER TABLE accounts ADD COLUMN gmail_added INTEGER DEFAULT 0",
+            "two_fa_enabled": "ALTER TABLE accounts ADD COLUMN two_fa_enabled INTEGER DEFAULT 0",
+            "is_enabled": "ALTER TABLE accounts ADD COLUMN is_enabled INTEGER DEFAULT 1",
+            "tg_user_id": "ALTER TABLE accounts ADD COLUMN tg_user_id INTEGER",
+            "session": "ALTER TABLE accounts ADD COLUMN session TEXT",
+        }
+        for column, ddl in new_columns.items():
+            if column not in columns:
+                await self._db.execute(ddl)
         await self._db.commit()
 
     # ═══════════════════════════════════════════
@@ -210,6 +252,36 @@ class Database:
     # COUNTRY OPERATIONS
     # ═══════════════════════════════════════════
 
+    async def get_country_by_name(self, name: str) -> Optional[Dict]:
+        cursor = await self._db.execute(
+            "SELECT * FROM countries WHERE LOWER(name) = LOWER(?)", (name.strip(),)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def create_country(self, name: str, flag: str = "") -> int:
+        """Create a country from just a name + emoji; the code is generated."""
+        base = "".join(ch for ch in name.upper() if ch.isalnum())[:3] or "CTY"
+        code, n = base, 1
+        while True:
+            cursor = await self._db.execute("SELECT 1 FROM countries WHERE code = ?", (code,))
+            if not await cursor.fetchone():
+                break
+            n += 1
+            code = f"{base}{n}"
+        cursor = await self._db.execute(
+            "INSERT INTO countries (name, code, flag) VALUES (?, ?, ?)", (name.strip(), code, flag)
+        )
+        await self._db.commit()
+        return cursor.lastrowid
+
+    async def last_price_for_country(self, country_id: int) -> Optional[float]:
+        cursor = await self._db.execute(
+            "SELECT price FROM accounts WHERE country_id = ? ORDER BY id DESC LIMIT 1", (country_id,)
+        )
+        row = await cursor.fetchone()
+        return row["price"] if row else None
+
     async def add_country(self, name: str, code: str, flag: str = "") -> int:
         """Add a new country. Returns the country ID."""
         cursor = await self._db.execute(
@@ -242,7 +314,7 @@ class Database:
         cursor = await self._db.execute("""
             SELECT c.*, COUNT(a.id) as stock_count
             FROM countries c
-            JOIN accounts a ON a.country_id = c.id AND a.status = 'available'
+            JOIN accounts a ON a.country_id = c.id AND a.status = 'available' AND a.is_enabled = 1
             WHERE c.is_active = 1
             GROUP BY c.id
             HAVING stock_count > 0
@@ -256,21 +328,40 @@ class Database:
     # ═══════════════════════════════════════════
 
     async def add_account(self, country_id: int, phone_number: str, price: float,
-                          otp: str = None, two_fa: str = None, added_by: int = None) -> int:
+                          otp: str = None, two_fa: str = None, added_by: int = None,
+                          category: str = "Standard", description: str = None,
+                          name: str = None, icon: str = "", username: str = None,
+                          gmail_added: bool = False, two_fa_enabled: bool = None,
+                          is_enabled: bool = True) -> int:
         """Add a new account to stock. Returns account ID."""
+        # Default the 2FA flag to "on" when a 2FA code was supplied.
+        if two_fa_enabled is None:
+            two_fa_enabled = bool(two_fa)
         cursor = await self._db.execute(
-            """INSERT INTO accounts (country_id, phone_number, otp, two_fa, price, added_by)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (country_id, phone_number, otp, two_fa, price, added_by)
+            """INSERT INTO accounts
+                   (country_id, phone_number, otp, two_fa, price, category, description,
+                    name, icon, username, gmail_added, two_fa_enabled, is_enabled, added_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (country_id, phone_number, otp, two_fa, price,
+             category or "Standard", description, name, icon or "", username,
+             int(bool(gmail_added)), int(bool(two_fa_enabled)), int(bool(is_enabled)), added_by)
         )
         await self._db.commit()
         return cursor.lastrowid
+
+    async def account_exists(self, country_id: int, phone_number: str) -> bool:
+        """Check if an account with the same phone already exists in a country."""
+        cursor = await self._db.execute(
+            "SELECT 1 FROM accounts WHERE country_id = ? AND phone_number = ? LIMIT 1",
+            (country_id, phone_number)
+        )
+        return await cursor.fetchone() is not None
 
     async def get_available_accounts(self, country_id: int) -> List[Dict]:
         """Get available accounts for a country."""
         cursor = await self._db.execute(
             """SELECT * FROM accounts
-               WHERE country_id = ? AND status = 'available'
+               WHERE country_id = ? AND status = 'available' AND is_enabled = 1
                ORDER BY price ASC""",
             (country_id,)
         )
@@ -281,6 +372,38 @@ class Database:
         """Get an account by ID."""
         cursor = await self._db.execute(
             "SELECT * FROM accounts WHERE id = ?", (account_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_account_groups(self, country_id: int) -> List[Dict]:
+        """Group available accounts of a country by (category, price).
+
+        Returns one row per distinct offer with a stock count, so the buy
+        menu can show e.g. "Fresh — ₹150 — 10 in stock" as a single button.
+        """
+        cursor = await self._db.execute(
+            """SELECT category, price, COUNT(*) as stock_count,
+                      MAX(description) as description
+               FROM accounts
+               WHERE country_id = ? AND status = 'available' AND is_enabled = 1
+               GROUP BY category, price
+               ORDER BY price ASC, category ASC""",
+            (country_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_next_available_account(self, country_id: int, category: str,
+                                         price: float) -> Optional[Dict]:
+        """Get the oldest available account matching a group (for grouped buy)."""
+        cursor = await self._db.execute(
+            """SELECT * FROM accounts
+               WHERE country_id = ? AND category = ? AND price = ?
+                 AND status = 'available' AND is_enabled = 1
+               ORDER BY added_at ASC
+               LIMIT 1""",
+            (country_id, category, price)
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
@@ -305,7 +428,10 @@ class Database:
 
     async def update_account(self, account_id: int, **kwargs):
         """Update account details."""
-        valid_fields = ["phone_number", "otp", "two_fa", "price", "status", "country_id"]
+        valid_fields = ["phone_number", "otp", "two_fa", "price", "status",
+                        "country_id", "category", "description", "name", "icon",
+                        "username", "gmail_added", "two_fa_enabled", "is_enabled",
+                        "tg_user_id", "session"]
         updates = {k: v for k, v in kwargs.items() if k in valid_fields}
 
         if not updates:
@@ -319,10 +445,19 @@ class Database:
         )
         await self._db.commit()
 
-    async def delete_account(self, account_id: int):
-        """Delete an account from stock."""
-        await self._db.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+    async def delete_account(self, account_id: int) -> bool:
+        """Remove an unsold account from stock.
+
+        Soft delete (status = 'removed'): a hard DELETE fails with a FOREIGN KEY
+        error whenever an old failed/refunded order still references the account.
+        Returns False if the account was not available.
+        """
+        cursor = await self._db.execute(
+            "UPDATE accounts SET status = 'removed' WHERE id = ? AND status = 'available'",
+            (account_id,)
+        )
         await self._db.commit()
+        return cursor.rowcount > 0
 
     async def get_stock_summary(self) -> List[Dict]:
         """Get stock summary by country."""
@@ -601,3 +736,140 @@ class Database:
         stats["total_deposits"] = row["total"]
 
         return stats
+
+    # ═══════════════════════════════════════════
+    # ADMIN PANEL QUERIES
+    # ═══════════════════════════════════════════
+
+    async def _one(self, query: str, params=()) -> Dict:
+        cursor = await self._db.execute(query, params)
+        row = await cursor.fetchone()
+        return dict(row) if row else {}
+
+    async def _all(self, query: str, params=()) -> List[Dict]:
+        cursor = await self._db.execute(query, params)
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_country_overview(self) -> List[Dict]:
+        """All countries (active and hidden) with available / sold counts."""
+        return await self._all("""
+            SELECT c.*,
+                   COUNT(CASE WHEN a.status = 'available' THEN 1 END) AS available,
+                   COUNT(CASE WHEN a.status = 'sold' THEN 1 END) AS sold
+            FROM countries c
+            LEFT JOIN accounts a ON a.country_id = c.id
+            GROUP BY c.id
+            ORDER BY c.name
+        """)
+
+    async def set_country_active(self, country_id: int, active: bool):
+        await self._db.execute(
+            "UPDATE countries SET is_active = ? WHERE id = ?", (1 if active else 0, country_id)
+        )
+        await self._db.commit()
+
+    async def count_available_accounts(self, country_id: int) -> int:
+        row = await self._one(
+            "SELECT COUNT(*) AS n FROM accounts WHERE country_id = ? AND status = 'available'",
+            (country_id,)
+        )
+        return row["n"]
+
+    async def get_available_accounts_page(self, country_id: int, limit: int, offset: int) -> List[Dict]:
+        return await self._all(
+            """SELECT * FROM accounts WHERE country_id = ? AND status = 'available'
+               ORDER BY id DESC LIMIT ? OFFSET ?""",
+            (country_id, limit, offset)
+        )
+
+    # ── Users ──
+
+    async def find_user(self, query: str) -> Optional[Dict]:
+        """Find a user by numeric ID or @username."""
+        query = query.strip()
+        if query.lstrip("-").isdigit():
+            return await self.get_user(int(query))
+        row = await self._one(
+            "SELECT * FROM users WHERE LOWER(username) = LOWER(?)", (query.lstrip("@"),)
+        )
+        return row or None
+
+    async def get_recent_users(self, limit: int = 8) -> List[Dict]:
+        return await self._all(
+            "SELECT * FROM users ORDER BY joined_at DESC LIMIT ?", (limit,)
+        )
+
+    async def get_user_counts(self) -> Dict:
+        return await self._one(
+            "SELECT COUNT(*) AS total, COALESCE(SUM(is_banned), 0) AS banned FROM users"
+        )
+
+    async def get_user_order_count(self, user_id: int) -> int:
+        row = await self._one(
+            "SELECT COUNT(*) AS n FROM orders WHERE user_id = ? AND status = 'completed'",
+            (user_id,)
+        )
+        return row["n"]
+
+    async def get_broadcast_user_ids(self) -> List[int]:
+        rows = await self._all("SELECT user_id FROM users WHERE is_banned = 0")
+        return [r["user_id"] for r in rows]
+
+    async def set_banned(self, user_id: int, banned: bool):
+        await self._db.execute(
+            "UPDATE users SET is_banned = ? WHERE user_id = ?", (1 if banned else 0, user_id)
+        )
+        await self._db.commit()
+
+    async def is_banned(self, user_id: int) -> bool:
+        row = await self._one("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
+        return bool(row.get("is_banned"))
+
+    # ── Reports ──
+
+    async def get_sales_report(self) -> Dict:
+        """Sales figures for today / 7 days / 30 days / all time (Indian time, UTC+5:30)."""
+        ist_today = "date('now', '+5 hours', '+30 minutes')"
+        ist = "date({col}, '+5 hours', '+30 minutes')"
+        report = {}
+        for key, cond in (
+            ("today", f"{ist.format(col='completed_at')} = {ist_today}"),
+            ("week", f"{ist.format(col='completed_at')} > date({ist_today}, '-7 days')"),
+            ("month", f"{ist.format(col='completed_at')} > date({ist_today}, '-30 days')"),
+            ("all", "1 = 1"),
+        ):
+            report[key] = await self._one(
+                f"""SELECT COUNT(*) AS orders, COALESCE(SUM(amount), 0) AS revenue
+                    FROM orders WHERE status = 'completed' AND {cond}"""
+            )
+        report["deposits_today"] = (await self._one(
+            f"""SELECT COALESCE(SUM(amount), 0) AS total FROM deposits
+                WHERE status = 'verified' AND {ist.format(col='verified_at')} = {ist_today}"""
+        ))["total"]
+        report["new_users_today"] = (await self._one(
+            f"SELECT COUNT(*) AS n FROM users WHERE {ist.format(col='joined_at')} = {ist_today}"
+        ))["n"]
+        report["pending_deposits"] = (await self._one(
+            "SELECT COUNT(*) AS n FROM deposits WHERE status = 'pending'"
+        ))["n"]
+        report["available_stock"] = (await self._one(
+            "SELECT COUNT(*) AS n FROM accounts WHERE status = 'available'"
+        ))["n"]
+        report["total_users"] = (await self._one("SELECT COUNT(*) AS n FROM users"))["n"]
+        report["wallet_total"] = (await self._one(
+            "SELECT COALESCE(SUM(balance), 0) AS total FROM users"
+        ))["total"]
+        report["top_countries"] = await self._all(
+            f"""SELECT c.flag, c.name, COUNT(*) AS orders, SUM(o.amount) AS revenue
+                FROM orders o
+                JOIN accounts a ON o.account_id = a.id
+                JOIN countries c ON a.country_id = c.id
+                WHERE o.status = 'completed'
+                  AND {ist.format(col='o.completed_at')} > date({ist_today}, '-30 days')
+                GROUP BY c.id ORDER BY revenue DESC LIMIT 5"""
+        )
+        return report
+
+    async def backup_to(self, path: str):
+        """Write a consistent copy of the database to ``path`` (safe while running)."""
+        await self._db.execute("VACUUM INTO ?", (path,))

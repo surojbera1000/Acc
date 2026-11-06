@@ -5,15 +5,17 @@ import string
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    ContextTypes, ConversationHandler, MessageHandler, filters
+    ContextTypes, ApplicationHandlerStop, ConversationHandler, MessageHandler, filters
 )
 
 from config import UPI_ID, UPI_NAME, CURRENCY_SYMBOL, SUPPORT_CONTACT, ADMIN_IDS
 from database import Database
-from utils.keyboards import Keyboards
+from utils.keyboards import Keyboards, SUCCESS, DANGER
 from utils.helpers import format_price
 
 logger = logging.getLogger(__name__)
+
+MENU_BUTTON_TEXTS = {b.text for row in Keyboards.main_menu().keyboard for b in row}
 
 # Conversation states
 WAITING_CUSTOM_AMOUNT = 1
@@ -99,6 +101,8 @@ async def handle_custom_amount(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         amount = float(text)
+        if amount != amount or amount in (float("inf"), float("-inf")):
+            raise ValueError("non-finite amount")
     except ValueError:
         await update.message.reply_text(
             "❌ Invalid amount. Please enter a number.\n"
@@ -287,8 +291,8 @@ async def notify_admins_new_deposit(context: ContextTypes.DEFAULT_TYPE,
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Approve", callback_data=f"approve_deposit_{deposit_id}"),
-         InlineKeyboardButton("❌ Reject", callback_data=f"reject_deposit_{deposit_id}")]
+        [InlineKeyboardButton("✅ Approve", callback_data=f"approve_deposit_{deposit_id}", style=SUCCESS),
+         InlineKeyboardButton("❌ Reject", callback_data=f"reject_deposit_{deposit_id}", style=DANGER)]
     ])
 
     text = (
@@ -350,16 +354,26 @@ async def deposit_back_callback(update: Update, context: ContextTypes.DEFAULT_TY
 # ═══════════════════════════════════════════
 
 async def payment_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages that might be payment-related."""
-    # Check if user is in UTR input mode
+    """Handle UTR / custom amount input.
+
+    Runs before the menu text handler; when the message is consumed here,
+    ApplicationHandlerStop stops the menu handler from also replying.
+    """
+    if not (context.user_data.get("awaiting_utr") or context.user_data.get("awaiting_custom_amount")):
+        return
+
+    # A main-menu button press leaves payment input mode
+    if update.message.text in MENU_BUTTON_TEXTS:
+        context.user_data["awaiting_utr"] = False
+        context.user_data["awaiting_custom_amount"] = False
+        return
+
     if context.user_data.get("awaiting_utr"):
-        return await handle_utr_input(update, context)
-
-    # Check if user is entering custom amount
-    if context.user_data.get("awaiting_custom_amount"):
-        return await handle_custom_amount(update, context)
-
-    return False
+        handled = await handle_utr_input(update, context)
+    else:
+        handled = await handle_custom_amount(update, context)
+    if handled:
+        raise ApplicationHandlerStop
 
 
 
@@ -367,10 +381,23 @@ async def payment_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 # REGISTER PAYMENT HANDLERS
 # ═══════════════════════════════════════════
 
+async def menu_deposit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """'Deposit Now' button (e.g. from insufficient balance screen)."""
+    await update.callback_query.answer()
+    await deposit_command(update, context)
+
+
+async def copy_upi_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """'Copy UPI ID' button: show the UPI ID in a popup so it can be copied."""
+    await update.callback_query.answer(f"UPI ID: {UPI_ID}", show_alert=True)
+
+
 def register_payment_handlers(application: Application):
     """Register all payment-related handlers."""
     # Deposit command
     application.add_handler(CommandHandler("deposit", deposit_command))
+    application.add_handler(CallbackQueryHandler(menu_deposit_callback, pattern=r"^menu_deposit$"))
+    application.add_handler(CallbackQueryHandler(copy_upi_callback, pattern=r"^copyupi_\d+$"))
 
     # Deposit amount callbacks
     application.add_handler(CallbackQueryHandler(
@@ -393,7 +420,7 @@ def register_payment_handlers(application: Application):
     # This needs to be added with a lower group so it processes before the main text handler
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, payment_text_handler),
-        group=1
+        group=-1
     )
 
     logger.info("Payment handlers registered.")

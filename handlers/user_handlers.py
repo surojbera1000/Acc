@@ -1,4 +1,5 @@
 """User-facing handlers for the Telegram Account Bot."""
+import html
 import logging
 from telegram import Update
 from telegram.ext import (
@@ -9,7 +10,9 @@ from telegram.ext import (
 from config import SUPPORT_CONTACT, CURRENCY_SYMBOL
 from database import Database
 from utils.keyboards import Keyboards
-from utils.helpers import format_price, is_admin, get_user_display_name, format_order_status
+from utils.helpers import (
+    format_price, get_user_display_name, format_order_status, build_delivery_text
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +48,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📜 <b>Order History</b> - View your purchases\n"
         f"💰 <b>Deposit</b> - Add funds via UPI\n"
         f"👛 <b>Wallet</b> - Check your balance\n"
-        f"❓ <b>Help</b> - Contact support\n"
+        f"👤 <b>Profile</b> - Your account details\n"
+        f"📞 <b>Support</b> - Chat with us directly\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"Use the buttons below to navigate! 👇"
     )
@@ -110,9 +114,14 @@ async def buy_country_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("❌ Country not found.")
         return
 
-    accounts = await db.get_available_accounts(country_id)
+    await _show_country_groups(query, db, country, sort="price_asc")
 
-    if not accounts:
+
+async def _show_country_groups(query, db, country, sort="price_asc"):
+    """Render the grouped (category + price) offer list for a country."""
+    groups = await db.get_account_groups(country["id"])
+
+    if not groups:
         await query.edit_message_text(
             f"😔 No accounts available for <b>{country['flag']} {country['name']}</b> right now.\n\n"
             f"Please check back later!",
@@ -121,14 +130,115 @@ async def buy_country_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    if sort == "price_desc":
+        groups = sorted(groups, key=lambda g: g["price"], reverse=True)
+    else:
+        groups = sorted(groups, key=lambda g: g["price"])
+
+    total = sum(g["stock_count"] for g in groups)
     text = (
         f"🌍 <b>{country['flag']} {country['name']}</b>\n\n"
-        f"📦 Available accounts: <b>{len(accounts)}</b>\n\n"
-        f"Select an account to purchase:\n"
+        f"📦 Available: <b>{total}</b> accounts across <b>{len(groups)}</b> option(s)\n\n"
+        f"Choose an option to purchase:\n"
     )
 
-    keyboard = Keyboards.account_list(accounts, country['name'])
+    keyboard = Keyboards.account_groups(country["id"], groups, sort=sort)
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def buy_group_sort_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle sort order of the grouped offer list."""
+    query = update.callback_query
+    await query.answer()
+    _, country_id, sort = query.data.split("_", 2)
+    db = get_db(context)
+    country = await db.get_country(int(country_id))
+    if not country:
+        await query.edit_message_text("❌ Country not found.")
+        return
+    await _show_country_groups(query, db, country, sort=sort)
+
+
+async def buy_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle selecting a (category, price) group - show confirmation."""
+    query = update.callback_query
+    await query.answer()
+
+    # grp_{country_id}_{category}_{price} — parse from both ends so the
+    # category is allowed to contain underscores.
+    body = query.data[len("grp_"):]
+    country_id_str, rest = body.split("_", 1)
+    category, price_str = rest.rsplit("_", 1)
+    country_id = int(country_id_str)
+    price = float(price_str)
+    db = get_db(context)
+
+    country = await db.get_country(country_id)
+    account = await db.get_next_available_account(country_id, category, price)
+    if not country or not account:
+        await query.edit_message_text(
+            "❌ This option is no longer available.\nPlease pick another one.",
+            reply_markup=Keyboards.back_button("buy_back")
+        )
+        return
+
+    groups = await db.get_account_groups(country_id)
+    stock = next((g["stock_count"] for g in groups
+                  if g["category"] == category and g["price"] == price), 0)
+    user_balance = await db.get_user_balance(query.from_user.id)
+
+    text = (
+        f"🛒 <b>Confirm Purchase</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🌍 Country: <b>{country['flag']} {country['name']}</b>\n"
+        f"🏷 Type: <b>{category}</b>\n"
+        f"📦 In stock: <b>{stock}</b>\n"
+        f"💰 Price: <b>{format_price(price)}</b>\n"
+    )
+    if account.get("description"):
+        text += f"📝 {account['description']}\n"
+    text += (
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👛 Your Balance: <b>{format_price(user_balance)}</b>\n"
+    )
+
+    if user_balance < price:
+        text += (
+            f"\n⚠️ <b>Insufficient balance!</b>\n"
+            f"You need <b>{format_price(price - user_balance)}</b> more.\n"
+            f"Please deposit funds first."
+        )
+        keyboard = Keyboards.insufficient_balance()
+    else:
+        text += f"\n✅ You have enough balance to purchase."
+        keyboard = Keyboards.confirm_group_purchase(country_id, category, price)
+
+    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def confirm_group_purchase_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Confirm a grouped purchase - picks the next available account & delivers."""
+    query = update.callback_query
+    await query.answer()
+
+    # cgrp_{country_id}_{category}_{price} — parse from both ends (see above).
+    body = query.data[len("cgrp_"):]
+    country_id_str, rest = body.split("_", 1)
+    category, price_str = rest.rsplit("_", 1)
+    country_id = int(country_id_str)
+    price = float(price_str)
+    db = get_db(context)
+
+    account = await db.get_next_available_account(country_id, category, price)
+    if not account:
+        await query.edit_message_text(
+            "❌ Sorry, this option just sold out!\nPlease pick another one.",
+            reply_markup=Keyboards.back_button("buy_back")
+        )
+        return
+
+    # Reuse the shared purchase routine with the resolved account id
+    await _process_purchase(query, context, account["id"])
 
 
 async def buy_account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -167,7 +277,7 @@ async def buy_account_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             f"You need <b>{format_price(account['price'] - user_balance)}</b> more.\n"
             f"Please deposit funds first."
         )
-        keyboard = Keyboards.back_button("buy_back")
+        keyboard = Keyboards.insufficient_balance()
     else:
         text += f"\n✅ You have enough balance to purchase."
         keyboard = Keyboards.confirm_purchase(account_id)
@@ -176,11 +286,15 @@ async def buy_account_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def confirm_purchase_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle purchase confirmation - process the purchase."""
+    """Handle purchase confirmation (legacy per-account flow)."""
     query = update.callback_query
     await query.answer()
-
     account_id = int(query.data.split("_")[-1])
+    await _process_purchase(query, context, account_id)
+
+
+async def _process_purchase(query, context: ContextTypes.DEFAULT_TYPE, account_id: int):
+    """Shared purchase/delivery routine with auto-refund on failure."""
     user_id = query.from_user.id
     db = get_db(context)
 
@@ -203,27 +317,35 @@ async def confirm_purchase_callback(update: Update, context: ContextTypes.DEFAUL
         )
         return
 
+    # Track progress so the error path only reverses steps that actually happened
+    price = account["price"]
+    order_id = None
+    balance_deducted = False
+    account_marked_sold = False
+
     # Process purchase
     try:
         # Create order
-        order_id = await db.create_order(user_id, account_id, account["price"])
+        order_id = await db.create_order(user_id, account_id, price)
 
         # Create transaction
         tx_id = await db.create_transaction(
-            user_id, "purchase", account["price"],
+            user_id, "purchase", price,
             description=f"Purchase account #{account_id}",
             reference=f"ORDER-{order_id}"
         )
 
         # Deduct balance
-        new_balance = await db.update_balance(user_id, account["price"], "subtract")
-        await db.add_to_total_spent(user_id, account["price"])
+        new_balance = await db.update_balance(user_id, price, "subtract")
+        balance_deducted = True
+        await db.add_to_total_spent(user_id, price)
 
         # Complete transaction
         await db.complete_transaction(tx_id, new_balance)
 
         # Mark account as sold
         await db.mark_account_sold(account_id, user_id)
+        account_marked_sold = True
 
         # Complete order and deliver
         await db.complete_order(order_id)
@@ -233,55 +355,31 @@ async def confirm_purchase_callback(update: Update, context: ContextTypes.DEFAUL
         country = await db.get_country(account["country_id"])
 
         # Deliver account details
-        delivery_text = (
-            f"✅ <b>Purchase Successful!</b>\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📋 <b>Order #{order_id}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🌍 Country: <b>{country['flag']} {country['name']}</b>\n"
-            f"📱 Phone: <code>{account['phone_number']}</code>\n"
-        )
-
-        if account.get("otp"):
-            delivery_text += f"🔑 OTP: <code>{account['otp']}</code>\n"
-
-        if account.get("two_fa"):
-            delivery_text += f"🔐 2FA: <code>{account['two_fa']}</code>\n"
-
-        delivery_text += (
-            f"\n💰 Amount Paid: <b>{format_price(account['price'])}</b>\n"
-            f"👛 Remaining Balance: <b>{format_price(new_balance)}</b>\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ <i>Save this information! It won't be shown again.</i>"
-        )
-
+        delivery_text = build_delivery_text(order_id, account, country, new_balance)
         await query.edit_message_text(delivery_text, parse_mode="HTML")
         logger.info(f"Order #{order_id} completed - User {user_id} bought account #{account_id}")
 
     except Exception as e:
         logger.error(f"Purchase failed for user {user_id}, account {account_id}: {e}")
 
-        # Auto-refund on failure
+        # Auto-refund on failure — only reverse what actually happened
         try:
-            # Refund the balance
-            if 'order_id' in dir():
+            if order_id is not None:
                 await db.fail_order(order_id, "Technical error during delivery")
                 await db.refund_order(order_id, "Auto-refund: delivery failed")
 
-            # Restore balance
-            await db.update_balance(user_id, account["price"], "add")
+            if account_marked_sold:
+                await db.mark_account_available(account_id)
 
-            # Mark account available again
-            await db.mark_account_available(account_id)
-
-            # Create refund transaction
-            refund_balance = await db.get_user_balance(user_id)
-            refund_tx = await db.create_transaction(
-                user_id, "refund", account["price"],
-                description=f"Auto-refund for failed order",
-                reference=f"REFUND-ORDER-{order_id}"
-            )
-            await db.complete_transaction(refund_tx, refund_balance)
+            if balance_deducted:
+                refund_balance = await db.update_balance(user_id, price, "add")
+                await db.add_to_total_spent(user_id, -price)
+                refund_tx = await db.create_transaction(
+                    user_id, "refund", price,
+                    description="Auto-refund for failed order",
+                    reference=f"REFUND-ORDER-{order_id}"
+                )
+                await db.complete_transaction(refund_tx, refund_balance)
 
             await query.edit_message_text(
                 "❌ <b>Delivery Failed</b>\n\n"
@@ -389,40 +487,51 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════
-# HELP
+# PROFILE
 # ═══════════════════════════════════════════
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help command - show help info."""
-    text = (
-        f"❓ <b>Help & Support</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>How to buy an account:</b>\n"
-        f"1️⃣ Deposit funds using /deposit\n"
-        f"2️⃣ Browse accounts using /buy\n"
-        f"3️⃣ Select a country and account\n"
-        f"4️⃣ Confirm your purchase\n"
-        f"5️⃣ Receive account details instantly!\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Commands:</b>\n"
-        f"/start - Main menu\n"
-        f"/buy - Buy an account\n"
-        f"/wallet - Check balance\n"
-        f"/deposit - Add funds\n"
-        f"/history - Order history\n"
-        f"/help - This help message\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Need assistance?</b>\n"
-        f"📩 Contact support: {SUPPORT_CONTACT}\n\n"
-        f"<b>Refund Policy:</b>\n"
-        f"If an account fails to deliver, your balance\n"
-        f"is automatically refunded to your wallet."
-    )
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the user's profile: identity, balance and order count."""
+    user = update.effective_user
+    db = get_db(context)
 
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode="HTML")
-    else:
-        await update.message.reply_text(text, parse_mode="HTML")
+    user_data = await db.get_or_create_user(
+        user_id=user.id, username=user.username,
+        first_name=user.first_name, last_name=user.last_name
+    )
+    orders = await db.get_user_orders(user.id, limit=1000)
+    completed = sum(1 for o in orders if o["status"] == "completed")
+
+    text = (
+        f"👤 <b>My Profile</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🙍 Name: <b>{html.escape(get_user_display_name(user))}</b>\n"
+        f"🔗 Username: {'@' + html.escape(user.username) if user.username else 'Not set'}\n"
+        f"🆔 User ID: <code>{user.id}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Balance: <b>{format_price(user_data['balance'])}</b>\n"
+        f"🛒 Orders Completed: <b>{completed}</b>\n"
+        f"📅 Member Since: {user_data['joined_at'][:10]}"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
+# ═══════════════════════════════════════════
+# SUPPORT
+# ═══════════════════════════════════════════
+
+async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show a button that opens a direct chat with the support account."""
+    handle = SUPPORT_CONTACT.strip().lstrip("@")
+    text = (
+        f"📞 <b>Customer Support</b>\n\n"
+        f"Need help with an order, deposit or refund?\n"
+        f"Tap the button below to chat directly with <b>@{html.escape(handle)}</b>.\n\n"
+        f"💡 <i>Share your Order ID or Deposit ID for faster help.</i>"
+    )
+    await update.message.reply_text(
+        text, reply_markup=Keyboards.support_button(SUPPORT_CONTACT), parse_mode="HTML"
+    )
 
 
 # ═══════════════════════════════════════════
@@ -443,8 +552,10 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await deposit_command(update, context)
     elif text == "👛 Wallet":
         await wallet_command(update, context)
-    elif text == "❓ Help":
-        await help_command(update, context)
+    elif text == "👤 Profile":
+        await profile_command(update, context)
+    elif text == "📞 Support":
+        await support_command(update, context)
     else:
         # Unknown text - show main menu
         await update.message.reply_text(
@@ -464,10 +575,16 @@ def register_user_handlers(application: Application):
     application.add_handler(CommandHandler("buy", buy_command))
     application.add_handler(CommandHandler("wallet", wallet_command))
     application.add_handler(CommandHandler("history", history_command))
-    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("profile", profile_command))
+    application.add_handler(CommandHandler("support", support_command))
 
     # Buy flow callback handlers
     application.add_handler(CallbackQueryHandler(buy_country_callback, pattern=r"^buy_country_\d+$"))
+    # Grouped buy flow (category + price)
+    application.add_handler(CallbackQueryHandler(buy_group_sort_callback, pattern=r"^grpsort_\d+_(price_asc|price_desc)$"))
+    application.add_handler(CallbackQueryHandler(buy_group_callback, pattern=r"^grp_\d+_.+_\d+$"))
+    application.add_handler(CallbackQueryHandler(confirm_group_purchase_callback, pattern=r"^cgrp_\d+_.+_\d+$"))
+    # Legacy per-account buy flow (kept for backward compatibility)
     application.add_handler(CallbackQueryHandler(buy_account_callback, pattern=r"^buy_account_\d+$"))
     application.add_handler(CallbackQueryHandler(confirm_purchase_callback, pattern=r"^confirm_buy_\d+$"))
     application.add_handler(CallbackQueryHandler(cancel_buy_callback, pattern=r"^cancel_buy$"))
