@@ -100,14 +100,15 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🕒 <i>Updated {datetime.now(IST).strftime('%d %b, %I:%M %p')}</i>"
     )
     markup = kb(
-        (btn("➕ Add Stock", "adm_add", SUCCESS), btn("📦 Manage Stock", "ms_home")),
-        (btn(f"💳 Deposits ({pending})" if pending else "💳 Deposits", "admin_deposits",
-             DANGER if pending else PRIMARY),
-         btn("🧾 Orders", "admin_orders")),
-        (btn("📈 Sales Report", "admin_stats"), btn("👥 Users", "us_home")),
-        (btn("🌍 Countries", "ct_home"), btn("📢 Broadcast", "bc_start", SUCCESS)),
+        (btn("➕  Add Account", "adm_add", SUCCESS),),
+        (btn("📦  Manage Stock", "ms_home"),),
+        (btn(f"💳  Pending Deposits ({pending})" if pending else "💳  Deposits", "admin_deposits",
+             DANGER if pending else PRIMARY),),
+        (btn("🧾 Orders", "admin_orders"), btn("📈 Sales Report", "admin_stats")),
+        (btn("👥 Users", "us_home"), btn("🌍 Countries", "ct_home")),
+        (btn("📢  Broadcast", "bc_start", SUCCESS),),
         (btn("💾 Backup", "admin_backup"), btn("🔄 Refresh", "admin_back")),
-        (btn("✖ Close", "admin_close", DANGER),),
+        (btn("✖  Close Panel", "admin_close", DANGER),),
     )
     await show(update, text, markup)
 
@@ -128,31 +129,253 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════
-# ADD STOCK
+# ADD ACCOUNT  (step-by-step wizard)
 # ═══════════════════════════════════════════
+#
+# Draft lives in context.user_data["aw"]; the current step is draft["step"].
+# Text for each step is routed here by admin_input_handler (type "add_wizard");
+# Skip / toggle / save are callback buttons.
+
+WIZARD_STEPS = ["name", "icon", "phone", "username", "price", "otp", "twofa"]
+
+STEP_PROMPT = {
+    "name": ("✏️ <b>Step 2/8 — Name</b>\n\nSend a <b>name/title</b> for this account "
+             "(e.g. <code>Telegram Fresh</code>):", False),
+    "icon": ("😀 <b>Step 3/8 — Icon</b>\n\nSend an <b>emoji</b> to show with this account, "
+             "or tap Skip:", True),
+    "phone": ("📞 <b>Step 4/8 — Number</b>\n\nSend the account <b>phone number</b> "
+              "(e.g. <code>+919876543210</code>):", False),
+    "username": ("🔗 <b>Step 5/8 — Username</b>\n\nSend the account <b>login username</b>, "
+                 "or tap Skip:", True),
+    "price": ("💰 <b>Step 6/8 — Price</b>\n\nSend the <b>price</b> in ₹ "
+              "(e.g. <code>150</code>):", False),
+    "otp": ("🔑 <b>Step 7/8 — OTP</b>\n\nSend the login <b>OTP</b> if needed, or tap Skip:", True),
+    "twofa": ("🔐 <b>Step 8/8 — 2FA</b>\n\nSend the <b>2FA password/code</b> if needed, "
+              "or tap Skip:", True),
+}
+
+
+def _yn(v):
+    return "✅ Yes" if v else "❌ No"
+
+
+def _onoff(v):
+    return "🟢 On" if v else "🔴 Off"
+
 
 @admin_required
 async def add_stock_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point: Step 1 — choose the country."""
     countries = await get_db(context).get_countries(active_only=False)
     if not countries:
         await show(update,
-                   "➕ <b>Add Stock</b>\n\n❌ No countries yet. Add a country first.",
+                   "➕ <b>Add Account</b>\n\n❌ No countries yet. Add one first from 🌍 Countries.",
                    kb((btn("🌍 Countries", "ct_home"),), back_row()))
         return
+    context.user_data.pop("aw", None)
+    rows = [(btn(f"{c['flag']} {c['name']}", f"aw_c_{c['id']}"),) for c in countries]
+    await show(update,
+               "➕ <b>Add Account — Step 1/8</b>\n" + LINE + "\nSelect the <b>country</b> for this account:",
+               kb(*rows, (btn("📋 Bulk / command add", "adm_addhelp"),), back_row()))
 
+
+@admin_required
+async def add_help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Old command-based add help (kept for power users / bulk adds)."""
+    countries = await get_db(context).get_countries(active_only=False)
     ids = "\n".join(f"  {c['flag']} {esc(c['name'])} → ID <b>{c['id']}</b>" for c in countries)
     text = (
-        f"➕ <b>Add Stock</b>\n{LINE}\n"
+        f"📋 <b>Bulk / Command Add</b>\n{LINE}\n"
         "<b>Single account:</b>\n"
-        "<code>/addaccount country_id|phone|price|otp|2fa|type</code>\n"
-        "e.g. <code>/addaccount 1|+919876543210|150|1234|-|Fresh</code>\n\n"
-        "<b>Many accounts at once:</b>\n"
+        "<code>/addaccount country_id|phone|price|otp|2fa|type</code>\n\n"
+        "<b>Many at once:</b>\n"
         "<code>/bulkadd country_id|type\nphone|price|otp|2fa\nphone|price|otp|2fa</code>\n\n"
         "• Use <code>-</code> for empty OTP / 2FA\n"
         "• Duplicate phone numbers are skipped\n"
         f"{LINE}\n<b>Country IDs:</b>\n{ids}"
     )
-    await show(update, text, kb(back_row()))
+    await show(update, text, kb((btn("⬅ Add Account", "adm_add"),), back_row()))
+
+
+async def _wiz_show(update, context):
+    """Render the current wizard step (prompt, review, or done)."""
+    draft = context.user_data.get("aw")
+    if not draft:
+        await show(update, "⚠ This wizard expired. Start again from ➕ Add Account.",
+                   kb((btn("➕ Add Account", "adm_add", SUCCESS),), back_row()))
+        return
+    step = draft["step"]
+    if step == "review":
+        await show(update, *_wiz_review(draft))
+        return
+    prompt, optional = STEP_PROMPT[step]
+    buttons = []
+    if optional:
+        buttons.append((btn("⏭ Skip", "aw_skip"),))
+    buttons.append((btn("✖ Cancel", "aw_cancel", DANGER),))
+    await show(update, f"{prompt}\n\n<i>Or /cancel</i>", kb(*buttons))
+
+
+def _wiz_review(draft):
+    c = draft
+    text = (
+        f"🧾 <b>Review Account</b>\n{LINE}\n"
+        f"🌍 Country: {c.get('country_flag', '')} {esc(c.get('country_name'))}\n"
+        f"🏷 Name: <b>{esc(c.get('name'))}</b>\n"
+        f"{(c.get('icon') or '')} Icon: {esc(c.get('icon'))}\n"
+        f"📞 Number: <code>{esc(c.get('phone'))}</code>\n"
+        f"🔗 Username: <code>{esc(c.get('username'))}</code>\n"
+        f"💰 Price: <b>{format_price(c.get('price', 0))}</b>\n"
+        f"🔑 OTP: <code>{esc(c.get('otp'))}</code>\n"
+        f"🔐 2FA code: <code>{esc(c.get('two_fa'))}</code>\n{LINE}\n"
+        f"📧 Gmail Added: <b>{_yn(c.get('gmail_added'))}</b>\n"
+        f"🔐 2FA: <b>{_onoff(c.get('two_fa_enabled'))}</b>\n"
+        f"📌 Listing: <b>{'🟢 Enabled' if c.get('is_enabled', True) else '🔴 Disabled'}</b>\n{LINE}\n"
+        "Tap a toggle to change it, then Save:"
+    )
+    markup = kb(
+        (btn(f"📧 Gmail Added: {_yn(c.get('gmail_added'))}", "aw_tg_gmail",
+             SUCCESS if c.get("gmail_added") else PRIMARY),),
+        (btn(f"🔐 2FA: {_onoff(c.get('two_fa_enabled'))}", "aw_tg_twofa",
+             SUCCESS if c.get("two_fa_enabled") else PRIMARY),),
+        (btn(f"📌 Listing: {'🟢 Enabled' if c.get('is_enabled', True) else '🔴 Disabled'}",
+             "aw_tg_enabled", SUCCESS if c.get("is_enabled", True) else DANGER),),
+        (btn("✅  Save Account", "aw_save", SUCCESS),),
+        (btn("✖ Cancel", "aw_cancel", DANGER),),
+    )
+    return text, markup
+
+
+@admin_required
+async def wiz_country_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cid = cb_int(update)
+    country = await get_db(context).get_country(cid)
+    if not country:
+        await show(update, "❌ Country not found.", kb(back_row()))
+        return
+    context.user_data["aw"] = {
+        "step": "name", "country_id": cid,
+        "country_name": country["name"], "country_flag": country["flag"],
+        "icon": "", "username": None, "otp": None, "two_fa": None,
+        "gmail_added": False, "two_fa_enabled": False, "is_enabled": True,
+    }
+    set_input(context, type="add_wizard")
+    await _wiz_show(update, context)
+
+
+@admin_required
+async def wiz_skip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    draft = context.user_data.get("aw")
+    if not draft:
+        await _wiz_show(update, context)
+        return
+    _, optional = STEP_PROMPT.get(draft["step"], ("", False))
+    if optional:
+        _wiz_set(draft, draft["step"], None)
+        _wiz_next(draft)
+    await _wiz_show(update, context)
+
+
+@admin_required
+async def wiz_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    draft = context.user_data.get("aw")
+    key = update.callback_query.data.rsplit("_", 1)[-1]
+    if draft:
+        field = {"gmail": "gmail_added", "twofa": "two_fa_enabled", "enabled": "is_enabled"}[key]
+        draft[field] = not draft.get(field, False)
+    await _wiz_show(update, context)
+
+
+@admin_required
+async def wiz_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("aw", None)
+    clear_input(context)
+    await show(update, "✖ Add Account cancelled.", kb(back_row(label="🛠 Dashboard")))
+
+
+@admin_required
+async def wiz_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    draft = context.user_data.get("aw")
+    if not draft or draft.get("step") != "review":
+        await _wiz_show(update, context)
+        return
+    db = get_db(context)
+    if await db.account_exists(draft["country_id"], draft["phone"]):
+        await show(update,
+                   f"⚠ An account with number <code>{esc(draft['phone'])}</code> already "
+                   "exists in this country.",
+                   kb((btn("⬅ Back to review", "aw_review"),), (btn("✖ Cancel", "aw_cancel", DANGER),)))
+        return
+    account_id = await db.add_account(
+        country_id=draft["country_id"], phone_number=draft["phone"], price=draft["price"],
+        otp=draft.get("otp"), two_fa=draft.get("two_fa"), added_by=update.effective_user.id,
+        category=draft.get("name") or "Standard", name=draft.get("name"),
+        icon=draft.get("icon") or "", username=draft.get("username"),
+        gmail_added=draft.get("gmail_added"), two_fa_enabled=draft.get("two_fa_enabled"),
+        is_enabled=draft.get("is_enabled", True),
+    )
+    context.user_data.pop("aw", None)
+    clear_input(context)
+    logger.info("Admin %s added account #%s via wizard", update.effective_user.id, account_id)
+    text, markup = await _account_view(db, account_id)
+    await show(update, f"✅ <b>Account #{account_id} added!</b>\n\n" + text, markup)
+
+
+@admin_required
+async def wiz_review_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    draft = context.user_data.get("aw")
+    if draft:
+        draft["step"] = "review"
+    await _wiz_show(update, context)
+
+
+def _wiz_set(draft, key, value):
+    mapping = {"name": "name", "icon": "icon", "phone": "phone", "username": "username",
+               "price": "price", "otp": "otp", "twofa": "two_fa"}
+    draft[mapping[key]] = value
+    if key == "twofa" and value:
+        draft["two_fa_enabled"] = True
+
+
+def _wiz_next(draft):
+    idx = WIZARD_STEPS.index(draft["step"])
+    draft["step"] = WIZARD_STEPS[idx + 1] if idx + 1 < len(WIZARD_STEPS) else "review"
+
+
+async def _wiz_input(update, context, text):
+    """Handle a typed value for the current wizard step."""
+    draft = context.user_data.get("aw")
+    if not draft:
+        clear_input(context)
+        return
+    step = draft["step"]
+    if step == "review":
+        await update.message.reply_text(*_wiz_review(draft))
+        return
+
+    if step == "phone":
+        if await get_db(context).account_exists(draft["country_id"], text):
+            await update.message.reply_text(
+                "⚠ That number already exists in this country. Send a different one.")
+            return
+        _wiz_set(draft, "phone", text[:100])
+    elif step == "price":
+        try:
+            price = round(float(text.replace("₹", "").replace(",", "")), 2)
+            if not 0 < price < 1_000_000:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ Send a valid price, e.g. <code>150</code>",
+                                            parse_mode="HTML")
+            return
+        draft["price"] = price
+    elif step == "icon":
+        _wiz_set(draft, "icon", text[:8])
+    else:
+        _wiz_set(draft, step, text[:200])
+
+    _wiz_next(draft)
+    await _wiz_show(update, context)
 
 
 # ═══════════════════════════════════════════
@@ -204,7 +427,8 @@ async def stock_country_callback(update: Update, context: ContextTypes.DEFAULT_T
         + (f"📄 Page {page + 1}/{pages}\n" if pages > 1 else "")
         + ("\nTap an account to manage it:" if total else "\nNo available accounts. Use ➕ Add Stock.")
     )
-    rows = [(btn(f"📱 {a['phone_number']}  •  {a['category'] or 'Standard'}  •  ₹{a['price']:.0f}",
+    rows = [(btn(f"{(a['icon'] or '📱')} {a['name'] or a['category'] or 'Standard'}  •  "
+                 f"₹{a['price']:.0f}  •  {'🟢' if (a['is_enabled'] if a['is_enabled'] is not None else 1) else '🔴'}",
                  f"ms_a_{a['id']}"),) for a in accounts]
     nav = []
     if page > 0:
@@ -220,27 +444,60 @@ async def _account_view(db, account_id):
     if not a:
         return "❌ Account not found.", kb(back_row("ms_home"))
     c = await db.get_country(a["country_id"]) or {"flag": "", "name": "?"}
+    enabled = a["is_enabled"] if a["is_enabled"] is not None else 1
+    icon = a["icon"] or ""
     text = (
-        f"📱 <b>Account #{a['id']}</b>\n{LINE}\n"
+        f"{icon} <b>Account #{a['id']}</b>\n{LINE}\n"
         f"🌍 Country: {c['flag']} {esc(c['name'])}\n"
-        f"📞 Phone: <code>{esc(a['phone_number'])}</code>\n"
-        f"🏷 Type: <b>{esc(a['category'] or 'Standard')}</b>\n"
+        f"🏷 Name: <b>{esc(a['name'] or a['category'] or 'Standard')}</b>\n"
+        f"📞 Number: <code>{esc(a['phone_number'])}</code>\n"
+        f"🔗 Username: <code>{esc(a['username'])}</code>\n"
         f"💰 Price: <b>{format_price(a['price'])}</b>\n"
         f"🔑 OTP: <code>{esc(a['otp'])}</code>\n"
-        f"🔐 2FA: <code>{esc(a['two_fa'])}</code>\n"
-        f"📌 Status: <b>{esc(a['status'])}</b>\n"
+        f"🔐 2FA code: <code>{esc(a['two_fa'])}</code>\n{LINE}\n"
+        f"📧 Gmail Added: <b>{_yn(a['gmail_added'])}</b>\n"
+        f"🔐 2FA: <b>{_onoff(a['two_fa_enabled'])}</b>\n"
+        f"📌 Listing: <b>{'🟢 Enabled' if enabled else '🔴 Disabled'}</b>\n"
+        f"📊 Status: <b>{esc(a['status'])}</b>\n"
         f"📅 Added: {esc((a['added_at'] or '')[:16])}"
     )
     back = back_row(f"ms_c_{a['country_id']}_0", "⬅ Accounts")
-    if a["status"] != "available":
+    if a["status"] == "sold":
         return text, kb(back)
+    aid = a["id"]
     markup = kb(
-        (btn("💰 Edit Price", f"ms_e_price_{a['id']}"), btn("🏷 Edit Type", f"ms_e_category_{a['id']}")),
-        (btn("🔑 Edit OTP", f"ms_e_otp_{a['id']}"), btn("🔐 Edit 2FA", f"ms_e_twofa_{a['id']}")),
-        (btn("🗑 Delete Account", f"ms_d_{a['id']}", DANGER),),
+        (btn(f"📧 Gmail: {_yn(a['gmail_added'])}", f"ms_tg_gmail_{aid}",
+             SUCCESS if a["gmail_added"] else PRIMARY),
+         btn(f"🔐 2FA: {_onoff(a['two_fa_enabled'])}", f"ms_tg_twofa_{aid}",
+             SUCCESS if a["two_fa_enabled"] else PRIMARY)),
+        (btn("🔴 Disable" if enabled else "🟢 Enable", f"ms_tg_enabled_{aid}",
+             DANGER if enabled else SUCCESS),),
+        (btn("🏷 Name", f"ms_e_name_{aid}"), btn("😀 Icon", f"ms_e_icon_{aid}"),
+         btn("💰 Price", f"ms_e_price_{aid}")),
+        (btn("📞 Number", f"ms_e_phone_{aid}"), btn("🔗 Username", f"ms_e_username_{aid}")),
+        (btn("🔑 OTP", f"ms_e_otp_{aid}"), btn("🔐 2FA code", f"ms_e_twofa_{aid}"),
+         btn("🏷 Type", f"ms_e_category_{aid}")),
+        (btn("🗑 Delete Account", f"ms_d_{aid}", DANGER),),
         back,
     )
     return text, markup
+
+
+@admin_required
+async def stock_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Flip Gmail / 2FA / Enabled flags on an existing account."""
+    parts = update.callback_query.data.split("_")  # ms_tg_<key>_<id>
+    key, aid = parts[2], int(parts[3])
+    db = get_db(context)
+    account = await db.get_account(aid)
+    if not account or account["status"] == "sold":
+        await show(update, "⚠ Account is no longer editable.", kb(back_row("ms_home")))
+        return
+    field = {"gmail": "gmail_added", "twofa": "two_fa_enabled", "enabled": "is_enabled"}[key]
+    current = account[field] if account[field] is not None else (1 if field == "is_enabled" else 0)
+    await db.update_account(aid, **{field: 0 if current else 1})
+    text, markup = await _account_view(db, aid)
+    await show(update, text, markup)
 
 
 @admin_required
@@ -253,8 +510,12 @@ async def stock_account_callback(update: Update, context: ContextTypes.DEFAULT_T
 EDIT_FIELDS = {
     "price": ("price", "💰 Send the new <b>price</b> in ₹ (e.g. <code>150</code>):"),
     "category": ("category", "🏷 Send the new <b>type</b> (e.g. Fresh, Aged, Premium):"),
+    "name": ("name", "🏷 Send the new <b>name/title</b>:"),
+    "icon": ("icon", "😀 Send the new <b>emoji icon</b> (send <code>-</code> to clear):"),
+    "phone": ("phone_number", "📞 Send the new <b>phone number</b>:"),
+    "username": ("username", "🔗 Send the new <b>username</b> (send <code>-</code> to clear):"),
     "otp": ("otp", "🔑 Send the new <b>OTP</b> (send <code>-</code> to clear):"),
-    "twofa": ("two_fa", "🔐 Send the new <b>2FA</b> (send <code>-</code> to clear):"),
+    "twofa": ("two_fa", "🔐 Send the new <b>2FA</b> code (send <code>-</code> to clear):"),
 }
 
 
@@ -293,9 +554,9 @@ async def _apply_account_edit(update, context, state, text):
     db = get_db(context)
     aid, column = state["account_id"], state["column"]
     account = await db.get_account(aid)
-    if not account or account["status"] != "available":
+    if not account or account["status"] == "sold":
         clear_input(context)
-        await update.message.reply_text("⚠ Account is no longer available.")
+        await update.message.reply_text("⚠ Account is no longer editable.")
         return
     if column == "price":
         try:
@@ -306,8 +567,13 @@ async def _apply_account_edit(update, context, state, text):
             await update.message.reply_text("❌ Send a valid price, e.g. <code>150</code>",
                                             parse_mode="HTML")
             return
-    elif column in ("otp", "two_fa") and text == "-":
+    elif column in ("otp", "two_fa", "username", "icon") and text == "-":
         value = None
+    elif column == "phone_number":
+        if text != account["phone_number"] and await db.account_exists(account["country_id"], text):
+            await update.message.reply_text("⚠ That number already exists in this country.")
+            return
+        value = text[:100]
     else:
         value = text[:200]
     await db.update_account(aid, **{column: value})
@@ -664,11 +930,14 @@ async def admin_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Pressing a main-menu button leaves the admin input mode
     if text in MENU_BUTTON_TEXTS:
         clear_input(context)
+        context.user_data.pop("aw", None)
         return
 
     kind = state["type"]
     if kind == "broadcast":
         await _broadcast_preview(update, context)
+    elif kind == "add_wizard":
+        await _wiz_input(update, context, text)
     elif not text:
         await update.message.reply_text("✏ Please send text, or /cancel.")
     elif kind == "edit_account":
@@ -712,10 +981,18 @@ def register_admin_panel(application: Application):
         (r"^admin_back$", admin_command),
         (r"^admin_close$", admin_close_callback),
         (r"^adm_add$", add_stock_callback),
+        (r"^adm_addhelp$", add_help_callback),
+        (r"^aw_c_\d+$", wiz_country_callback),
+        (r"^aw_skip$", wiz_skip_callback),
+        (r"^aw_tg_(gmail|twofa|enabled)$", wiz_toggle_callback),
+        (r"^aw_review$", wiz_review_callback),
+        (r"^aw_save$", wiz_save_callback),
+        (r"^aw_cancel$", wiz_cancel_callback),
         (r"^ms_home$", stock_home_callback),
         (r"^ms_c_\d+_\d+$", stock_country_callback),
         (r"^ms_a_\d+$", stock_account_callback),
-        (r"^ms_e_(price|category|otp|twofa)_\d+$", stock_edit_callback),
+        (r"^ms_e_(price|category|otp|twofa|name|icon|phone|username)_\d+$", stock_edit_callback),
+        (r"^ms_tg_(gmail|twofa|enabled)_\d+$", stock_toggle_callback),
         (r"^ms_d_\d+$", stock_delete_callback),
         (r"^ms_dy_\d+$", stock_delete_confirm_callback),
         (r"^admin_orders$", orders_callback),

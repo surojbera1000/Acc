@@ -10,7 +10,9 @@ from telegram.ext import (
 from config import SUPPORT_CONTACT, CURRENCY_SYMBOL
 from database import Database
 from utils.keyboards import Keyboards
-from utils.helpers import format_price, is_admin, get_user_display_name, format_order_status
+from utils.helpers import (
+    format_price, get_user_display_name, format_order_status, build_delivery_text
+)
 
 logger = logging.getLogger(__name__)
 
@@ -315,27 +317,35 @@ async def _process_purchase(query, context: ContextTypes.DEFAULT_TYPE, account_i
         )
         return
 
+    # Track progress so the error path only reverses steps that actually happened
+    price = account["price"]
+    order_id = None
+    balance_deducted = False
+    account_marked_sold = False
+
     # Process purchase
     try:
         # Create order
-        order_id = await db.create_order(user_id, account_id, account["price"])
+        order_id = await db.create_order(user_id, account_id, price)
 
         # Create transaction
         tx_id = await db.create_transaction(
-            user_id, "purchase", account["price"],
+            user_id, "purchase", price,
             description=f"Purchase account #{account_id}",
             reference=f"ORDER-{order_id}"
         )
 
         # Deduct balance
-        new_balance = await db.update_balance(user_id, account["price"], "subtract")
-        await db.add_to_total_spent(user_id, account["price"])
+        new_balance = await db.update_balance(user_id, price, "subtract")
+        balance_deducted = True
+        await db.add_to_total_spent(user_id, price)
 
         # Complete transaction
         await db.complete_transaction(tx_id, new_balance)
 
         # Mark account as sold
         await db.mark_account_sold(account_id, user_id)
+        account_marked_sold = True
 
         # Complete order and deliver
         await db.complete_order(order_id)
@@ -345,55 +355,31 @@ async def _process_purchase(query, context: ContextTypes.DEFAULT_TYPE, account_i
         country = await db.get_country(account["country_id"])
 
         # Deliver account details
-        delivery_text = (
-            f"✅ <b>Purchase Successful!</b>\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📋 <b>Order #{order_id}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🌍 Country: <b>{country['flag']} {country['name']}</b>\n"
-            f"📱 Phone: <code>{account['phone_number']}</code>\n"
-        )
-
-        if account.get("otp"):
-            delivery_text += f"🔑 OTP: <code>{account['otp']}</code>\n"
-
-        if account.get("two_fa"):
-            delivery_text += f"🔐 2FA: <code>{account['two_fa']}</code>\n"
-
-        delivery_text += (
-            f"\n💰 Amount Paid: <b>{format_price(account['price'])}</b>\n"
-            f"👛 Remaining Balance: <b>{format_price(new_balance)}</b>\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ <i>Save this information! It won't be shown again.</i>"
-        )
-
+        delivery_text = build_delivery_text(order_id, account, country, new_balance)
         await query.edit_message_text(delivery_text, parse_mode="HTML")
         logger.info(f"Order #{order_id} completed - User {user_id} bought account #{account_id}")
 
     except Exception as e:
         logger.error(f"Purchase failed for user {user_id}, account {account_id}: {e}")
 
-        # Auto-refund on failure
+        # Auto-refund on failure — only reverse what actually happened
         try:
-            # Refund the balance
-            if 'order_id' in dir():
+            if order_id is not None:
                 await db.fail_order(order_id, "Technical error during delivery")
                 await db.refund_order(order_id, "Auto-refund: delivery failed")
 
-            # Restore balance
-            await db.update_balance(user_id, account["price"], "add")
+            if account_marked_sold:
+                await db.mark_account_available(account_id)
 
-            # Mark account available again
-            await db.mark_account_available(account_id)
-
-            # Create refund transaction
-            refund_balance = await db.get_user_balance(user_id)
-            refund_tx = await db.create_transaction(
-                user_id, "refund", account["price"],
-                description=f"Auto-refund for failed order",
-                reference=f"REFUND-ORDER-{order_id}"
-            )
-            await db.complete_transaction(refund_tx, refund_balance)
+            if balance_deducted:
+                refund_balance = await db.update_balance(user_id, price, "add")
+                await db.add_to_total_spent(user_id, -price)
+                refund_tx = await db.create_transaction(
+                    user_id, "refund", price,
+                    description="Auto-refund for failed order",
+                    reference=f"REFUND-ORDER-{order_id}"
+                )
+                await db.complete_transaction(refund_tx, refund_balance)
 
             await query.edit_message_text(
                 "❌ <b>Delivery Failed</b>\n\n"

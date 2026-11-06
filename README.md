@@ -13,8 +13,8 @@ A fully-featured Telegram bot for selling accounts with automatic delivery, UPI 
 
 ### Admin Side (button-driven dashboard, `/admin`)
 - **Live Dashboard** - Today's sales, deposits, new users, stock and pending deposits at a glance
-- **Add Stock** - Single (`/addaccount`) or bulk (`/bulkadd`) with country IDs listed
-- **Manage Stock** - Browse by country, edit price / type / OTP / 2FA, or delete accounts with buttons
+- **Add Account** - Step-by-step wizard (country → name → icon → number → username → price → OTP → 2FA), then a review screen with Gmail Added, 2FA On/Off and Enabled toggles before saving. Bulk/command add (`/addaccount`, `/bulkadd`) still available
+- **Manage Stock** - Browse by country; edit name / icon / number / username / price / type / OTP / 2FA; toggle Gmail Added, 2FA On/Off and Enable/Disable; delete accounts — all with buttons
 - **Deposits** - Approve / reject pending UPI deposits (button turns red when some are waiting)
 - **Orders** - Latest 15 orders with buyer and status
 - **Sales Report** - Today / 7 days / 30 days / all time, wallet totals, top countries

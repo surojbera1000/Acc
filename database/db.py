@@ -61,6 +61,12 @@ class Database:
                 price REAL NOT NULL,
                 category TEXT DEFAULT 'Standard',
                 description TEXT,
+                name TEXT,
+                icon TEXT DEFAULT '',
+                username TEXT,
+                gmail_added INTEGER DEFAULT 0,
+                two_fa_enabled INTEGER DEFAULT 0,
+                is_enabled INTEGER DEFAULT 1,
                 status TEXT DEFAULT 'available',
                 added_by INTEGER,
                 added_at TEXT DEFAULT (datetime('now')),
@@ -136,6 +142,19 @@ class Database:
             await self._db.execute(
                 "ALTER TABLE accounts ADD COLUMN description TEXT"
             )
+
+        # Professional account fields (name/icon/username + security flags)
+        new_columns = {
+            "name": "ALTER TABLE accounts ADD COLUMN name TEXT",
+            "icon": "ALTER TABLE accounts ADD COLUMN icon TEXT DEFAULT ''",
+            "username": "ALTER TABLE accounts ADD COLUMN username TEXT",
+            "gmail_added": "ALTER TABLE accounts ADD COLUMN gmail_added INTEGER DEFAULT 0",
+            "two_fa_enabled": "ALTER TABLE accounts ADD COLUMN two_fa_enabled INTEGER DEFAULT 0",
+            "is_enabled": "ALTER TABLE accounts ADD COLUMN is_enabled INTEGER DEFAULT 1",
+        }
+        for column, ddl in new_columns.items():
+            if column not in columns:
+                await self._db.execute(ddl)
         await self._db.commit()
 
     # ═══════════════════════════════════════════
@@ -261,7 +280,7 @@ class Database:
         cursor = await self._db.execute("""
             SELECT c.*, COUNT(a.id) as stock_count
             FROM countries c
-            JOIN accounts a ON a.country_id = c.id AND a.status = 'available'
+            JOIN accounts a ON a.country_id = c.id AND a.status = 'available' AND a.is_enabled = 1
             WHERE c.is_active = 1
             GROUP BY c.id
             HAVING stock_count > 0
@@ -276,14 +295,22 @@ class Database:
 
     async def add_account(self, country_id: int, phone_number: str, price: float,
                           otp: str = None, two_fa: str = None, added_by: int = None,
-                          category: str = "Standard", description: str = None) -> int:
+                          category: str = "Standard", description: str = None,
+                          name: str = None, icon: str = "", username: str = None,
+                          gmail_added: bool = False, two_fa_enabled: bool = None,
+                          is_enabled: bool = True) -> int:
         """Add a new account to stock. Returns account ID."""
+        # Default the 2FA flag to "on" when a 2FA code was supplied.
+        if two_fa_enabled is None:
+            two_fa_enabled = bool(two_fa)
         cursor = await self._db.execute(
             """INSERT INTO accounts
-                   (country_id, phone_number, otp, two_fa, price, category, description, added_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (country_id, phone_number, otp, two_fa, price, category, description,
+                    name, icon, username, gmail_added, two_fa_enabled, is_enabled, added_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (country_id, phone_number, otp, two_fa, price,
-             category or "Standard", description, added_by)
+             category or "Standard", description, name, icon or "", username,
+             int(bool(gmail_added)), int(bool(two_fa_enabled)), int(bool(is_enabled)), added_by)
         )
         await self._db.commit()
         return cursor.lastrowid
@@ -300,7 +327,7 @@ class Database:
         """Get available accounts for a country."""
         cursor = await self._db.execute(
             """SELECT * FROM accounts
-               WHERE country_id = ? AND status = 'available'
+               WHERE country_id = ? AND status = 'available' AND is_enabled = 1
                ORDER BY price ASC""",
             (country_id,)
         )
@@ -325,7 +352,7 @@ class Database:
             """SELECT category, price, COUNT(*) as stock_count,
                       MAX(description) as description
                FROM accounts
-               WHERE country_id = ? AND status = 'available'
+               WHERE country_id = ? AND status = 'available' AND is_enabled = 1
                GROUP BY category, price
                ORDER BY price ASC, category ASC""",
             (country_id,)
@@ -338,7 +365,8 @@ class Database:
         """Get the oldest available account matching a group (for grouped buy)."""
         cursor = await self._db.execute(
             """SELECT * FROM accounts
-               WHERE country_id = ? AND category = ? AND price = ? AND status = 'available'
+               WHERE country_id = ? AND category = ? AND price = ?
+                 AND status = 'available' AND is_enabled = 1
                ORDER BY added_at ASC
                LIMIT 1""",
             (country_id, category, price)
@@ -367,7 +395,8 @@ class Database:
     async def update_account(self, account_id: int, **kwargs):
         """Update account details."""
         valid_fields = ["phone_number", "otp", "two_fa", "price", "status",
-                        "country_id", "category", "description"]
+                        "country_id", "category", "description", "name", "icon",
+                        "username", "gmail_added", "two_fa_enabled", "is_enabled"]
         updates = {k: v for k, v in kwargs.items() if k in valid_fields}
 
         if not updates:
