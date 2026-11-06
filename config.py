@@ -6,6 +6,12 @@ which must stay out of version control.
 """
 import os
 
+from dotenv import load_dotenv
+
+# Load .env here: bot.py imports config before its own load_dotenv() call,
+# so without this every value below would ignore the .env file.
+load_dotenv()
+
 # Telegram Bot Token (get from @BotFather). Required — set it in .env.
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
