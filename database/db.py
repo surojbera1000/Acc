@@ -252,6 +252,36 @@ class Database:
     # COUNTRY OPERATIONS
     # ═══════════════════════════════════════════
 
+    async def get_country_by_name(self, name: str) -> Optional[Dict]:
+        cursor = await self._db.execute(
+            "SELECT * FROM countries WHERE LOWER(name) = LOWER(?)", (name.strip(),)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def create_country(self, name: str, flag: str = "") -> int:
+        """Create a country from just a name + emoji; the code is generated."""
+        base = "".join(ch for ch in name.upper() if ch.isalnum())[:3] or "CTY"
+        code, n = base, 1
+        while True:
+            cursor = await self._db.execute("SELECT 1 FROM countries WHERE code = ?", (code,))
+            if not await cursor.fetchone():
+                break
+            n += 1
+            code = f"{base}{n}"
+        cursor = await self._db.execute(
+            "INSERT INTO countries (name, code, flag) VALUES (?, ?, ?)", (name.strip(), code, flag)
+        )
+        await self._db.commit()
+        return cursor.lastrowid
+
+    async def last_price_for_country(self, country_id: int) -> Optional[float]:
+        cursor = await self._db.execute(
+            "SELECT price FROM accounts WHERE country_id = ? ORDER BY id DESC LIMIT 1", (country_id,)
+        )
+        row = await cursor.fetchone()
+        return row["price"] if row else None
+
     async def add_country(self, name: str, code: str, flag: str = "") -> int:
         """Add a new country. Returns the country ID."""
         cursor = await self._db.execute(

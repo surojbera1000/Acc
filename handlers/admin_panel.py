@@ -132,17 +132,18 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════
-# ADD ACCOUNT  (bot logs into the account)
+# ADD ACCOUNT  (step-by-step)
 # ═══════════════════════════════════════════
 #
-# Flow: Country -> Name -> Number -> OTP -> 2FA (only if the account has it)
-#       -> bot reads the account details -> Price -> Review [Add] [Cancel]
+# Steps: Country Name -> Emoji -> Number -> OTP -> 2FA -> Account Details [Add] [Cancel]
 #
-# The draft lives in context.user_data["aw"]. The live Telethon login lives in
-# LOGINS (keyed by admin id) because it is a network client, not plain data.
+# With API_ID/API_HASH set, the bot logs into the account with the OTP / 2FA and
+# reads its Name, Username, ID, 2FA and Gmail status. Without them it still works
+# and saves what the admin typed (Username / ID can't be detected then).
+#
+# Draft: context.user_data["aw"]. Live Telethon login: LOGINS[admin_id].
 
 LOGINS = {}
-LINE_SHORT = "━━━━━━━━━━━━━━"
 
 
 def _yn(v):
@@ -165,44 +166,33 @@ async def _drop_login(admin_id, log_out=False):
     await login.close()
 
 
-def _wiz_cancel_kb():
-    return kb((btn("✖ Cancel", "aw_cancel", DANGER),))
+def _step_kb(*extra):
+    return kb(*extra, (btn("✖  Cancel", "aw_cancel", DANGER),))
+
+
+def _auto():
+    return tg_login.is_configured()
 
 
 @admin_required
 async def add_stock_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Step 1: choose the country."""
+    """Step 1: Country name (type a new one, or tap an existing one)."""
     await _drop_login(update.effective_user.id, log_out=True)
-    context.user_data.pop("aw", None)
-    clear_input(context)
-
-    if not tg_login.is_configured():
-        await show(update,
-                   f"➕ <b>Add Account</b>\n{LINE}\n"
-                   "⚠ Auto-login is not set up yet.\n\n"
-                   "1. Open <b>my.telegram.org</b> → API development tools\n"
-                   "2. Create an app and copy <b>api_id</b> and <b>api_hash</b>\n"
-                   "3. Add them to <code>.env</code>:\n"
-                   "<code>API_ID=1234567\nAPI_HASH=abcdef...</code>\n"
-                   "4. Restart the bot",
-                   kb((btn("📋 Bulk / command add", "adm_addhelp"),), back_row()))
-        return
-
+    context.user_data["aw"] = {"step": "country", "is_enabled": True}
+    set_input(context, type="add_wizard")
     countries = await get_db(context).get_countries(active_only=False)
-    if not countries:
-        await show(update,
-                   "➕ <b>Add Account</b>\n\n❌ No countries yet. Add one first from 🌍 Countries.",
-                   kb((btn("🌍 Countries", "ct_home"),), back_row()))
-        return
     rows = [(btn(f"{c['flag']} {c['name']}", f"aw_c_{c['id']}"),) for c in countries]
     await show(update,
-               f"➕ <b>Add Account</b>\n{LINE}\n<b>Step 1 — Country</b>\nSelect the country:",
-               kb(*rows, (btn("📋 Bulk / command add", "adm_addhelp"),), back_row()))
+               f"➕ <b>Add Account</b>\n{LINE}\n"
+               "🌍 <b>Step 1/5 — Country Name</b>\n\n"
+               "Type the country name (e.g. <code>India</code>)"
+               + (" or tap one below:" if rows else ":"),
+               _step_kb(*rows))
 
 
 @admin_required
 async def add_help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command-based add (bulk / no login)."""
+    """Command-based add (bulk)."""
     countries = await get_db(context).get_countries(active_only=False)
     ids = "\n".join(f"  {c['flag']} {esc(c['name'])} → ID <b>{c['id']}</b>" for c in countries)
     text = (
@@ -212,33 +202,217 @@ async def add_help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>Many at once:</b>\n"
         "<code>/bulkadd country_id|type\nphone|price|otp|2fa\nphone|price|otp|2fa</code>\n\n"
         "• Use <code>-</code> for empty OTP / 2FA\n"
-        "• Duplicate phone numbers are skipped\n"
         f"{LINE}\n<b>Country IDs:</b>\n{ids or '  —'}"
     )
-    await show(update, text, kb((btn("⬅ Add Account", "adm_add"),), back_row()))
+    await show(update, text, kb((btn("➕ Add Account", "adm_add", SUCCESS),), back_row()))
 
+
+# ── step prompts ──
+
+async def _ask_emoji(update, draft):
+    draft["step"] = "emoji"
+    await show(update,
+               f"🌍 <b>{esc(draft['country_name'])}</b>\n{LINE}\n"
+               "😀 <b>Step 2/5 — Emoji</b>\n\nSend the flag / emoji for this country (e.g. 🇮🇳):",
+               _step_kb((btn("⏭ Skip", "aw_skip"),)))
+
+
+async def _ask_number(update, draft):
+    draft["step"] = "phone"
+    await show(update,
+               f"{draft['flag']} <b>{esc(draft['country_name'])}</b>\n{LINE}\n"
+               "📞 <b>Step 3/5 — Number</b>\n\n"
+               "Send the phone number with country code\n(e.g. <code>+919876543210</code>):",
+               _step_kb())
+
+
+async def _ask_otp(update, draft):
+    draft["step"] = "otp"
+    if _auto():
+        text = (f"🔑 <b>Step 4/5 — OTP</b>\n{LINE}\n"
+                f"Telegram sent a login code to <code>{esc(draft['phone'])}</code>.\n\n"
+                "Send it <b>with spaces</b>, e.g. <code>1 2 3 4 5</code>\n"
+                "<i>(Telegram cancels codes sent without spaces.)</i>")
+        markup = _step_kb((btn("🔁 Resend OTP", "aw_resend"),))
+    else:
+        text = f"🔑 <b>Step 4/5 — OTP</b>\n{LINE}\nSend the OTP, or tap Skip:"
+        markup = _step_kb((btn("⏭ Skip", "aw_skip"),))
+    await show(update, text, markup)
+
+
+async def _ask_twofa(update, draft):
+    draft["step"] = "twofa"
+    if _auto():
+        text = (f"🔐 <b>Step 5/5 — 2FA</b>\n{LINE}\n"
+                "This account has 2FA on. Send the <b>2FA password</b>:")
+        markup = _step_kb()
+    else:
+        text = f"🔐 <b>Step 5/5 — 2FA</b>\n{LINE}\nSend the 2FA password, or tap Skip:"
+        markup = _step_kb((btn("⏭ Skip", "aw_skip"),))
+    await show(update, text, markup)
+
+
+async def _ask_price(update, draft):
+    draft["step"] = "price"
+    await show(update, f"💰 <b>Price</b>\n{LINE}\nSend the selling price in ₹ (e.g. <code>150</code>):",
+               _step_kb())
+
+
+# ── details / review ──
+
+def _wiz_review(draft):
+    d = draft.get("details", {})
+    enabled = draft.get("is_enabled", True)
+    price = draft.get("price")
+    sessions = d.get("sessions")
+    text = (
+        f"✅ <b>Account Details</b>\n{LINE}\n"
+        f"🌍 Country: {draft['flag']} {esc(draft['country_name'])}\n"
+        f"👤 Name: <b>{esc(d.get('tg_name'))}</b>\n"
+        f"🔗 Username: {('@' + esc(d['username'])) if d.get('username') else '—'}\n"
+        f"📞 Number: <code>{esc(d.get('phone') or draft['phone'])}</code>\n"
+        f"🆔 ID: <code>{esc(d.get('tg_user_id'))}</code>\n"
+        f"{LINE}\n"
+        f"🔐 2FA: <b>{_onoff(draft.get('two_fa_enabled'))}</b>"
+        + (f"  •  <code>{esc(draft.get('two_fa'))}</code>" if draft.get("two_fa") else "") + "\n"
+        f"📧 Gmail: <b>{_yn(d.get('gmail_added'))}</b>\n"
+        + (f"⭐ Premium: <b>{_yn(d.get('premium'))}</b>\n" if "premium" in d else "")
+        + (f"📱 Sessions: <b>{sessions}</b>\n" if sessions is not None else "")
+        + f"{LINE}\n"
+        f"💰 Price: <b>{format_price(price) if price else 'Not set'}</b>\n"
+        f"📌 Listing: <b>{'🟢 Enabled' if enabled else '🔴 Disabled'}</b>"
+        + ("" if _auto() else
+           "\n\n<i>ℹ Name / Username / ID are detected only when API_ID & API_HASH are set.</i>")
+    )
+    markup = kb(
+        (btn(f"💰 {'Change' if price else 'Set'} Price", "aw_price"),
+         btn("🟢 Enabled" if enabled else "🔴 Disabled", "aw_tg_enabled",
+             SUCCESS if enabled else DANGER)),
+        (btn("✅  Add Account", "aw_save", SUCCESS),),
+        (btn("✖  Cancel", "aw_cancel", DANGER),),
+    )
+    return text, markup
+
+
+async def _show_review(update, context, draft):
+    draft["step"] = "review"
+    if draft.get("price") is None:
+        draft["price"] = await get_db(context).last_price_for_country(draft["country_id"])
+    await show(update, *_wiz_review(draft))
+
+
+async def _finish_login(update, context, draft, login):
+    try:
+        details = await login.fetch_details()
+    except Exception as e:
+        logger.exception("fetch_details failed")
+        await show(update, f"❌ Logged in, but reading details failed: {esc(e)}", _step_kb())
+        return
+    draft["details"] = details
+    draft["two_fa"] = login.password
+    draft["two_fa_enabled"] = details["two_fa_enabled"]
+    await _show_review(update, context, draft)
+
+
+async def _send_code(update, context, draft):
+    login = tg_login.AccountLogin(draft["phone"])
+    try:
+        await login.start()
+    except tg_login.LoginError as e:
+        draft["step"] = "phone"
+        await show(update, f"❌ {esc(e)}\n\nSend the number again:", _step_kb())
+        return
+    except Exception as e:
+        logger.exception("Login start failed")
+        draft["step"] = "phone"
+        await show(update, f"❌ Could not connect to Telegram: {esc(e)}\n\nSend the number again:",
+                   _step_kb())
+        return
+    LOGINS[update.effective_user.id] = login
+    await _ask_otp(update, draft)
+
+
+async def _save_country(update, context, draft, flag):
+    db = get_db(context)
+    existing = await db.get_country_by_name(draft["country_name"])
+    if existing:
+        cid = existing["id"]
+        if flag and not existing["flag"]:
+            await db._db.execute("UPDATE countries SET flag = ? WHERE id = ?", (flag, cid))
+            await db._db.commit()
+        flag = existing["flag"] or flag
+    else:
+        cid = await db.create_country(draft["country_name"], flag)
+    draft.update(country_id=cid, flag=flag or "🌍")
+    await _ask_number(update, draft)
+
+
+# ── buttons ──
 
 @admin_required
 async def wiz_country_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Existing country tapped: it already has an emoji, go straight to Number."""
     country = await get_db(context).get_country(cb_int(update))
-    if not country:
-        await show(update, "❌ Country not found.", kb(back_row()))
+    draft = context.user_data.get("aw")
+    if not country or not draft:
+        await add_stock_callback(update, context)
         return
-    context.user_data["aw"] = {
-        "step": "name", "country_id": country["id"],
-        "country_name": country["name"], "country_flag": country["flag"],
-        "is_enabled": True,
-    }
+    draft.update(country_id=country["id"], country_name=country["name"], flag=country["flag"] or "🌍")
     set_input(context, type="add_wizard")
-    await show(update,
-               f"{country['flag']} <b>{esc(country['name'])}</b>\n{LINE}\n"
-               "<b>Step 2 — Name</b>\nSend a name for this account (e.g. <code>Fresh ID</code>):",
-               _wiz_cancel_kb())
+    await _ask_number(update, draft)
+
+
+@admin_required
+async def wiz_skip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    draft = context.user_data.get("aw")
+    if not draft:
+        await add_stock_callback(update, context)
+        return
+    step = draft["step"]
+    if step == "emoji":
+        await _save_country(update, context, draft, "🌍")
+    elif step == "otp" and not _auto():
+        draft["otp"] = None
+        await _ask_twofa(update, draft)
+    elif step == "twofa" and not _auto():
+        draft["two_fa"], draft["two_fa_enabled"] = None, False
+        await _show_review(update, context, draft)
+    else:
+        await update.callback_query.answer("This step can't be skipped.", show_alert=True)
+
+
+@admin_required
+async def wiz_resend_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    draft = context.user_data.get("aw")
+    if not draft or draft.get("step") != "otp" or not _auto():
+        await update.callback_query.answer("Nothing to resend.", show_alert=True)
+        return
+    await _drop_login(update.effective_user.id)
+    await _send_code(update, context, draft)
+
+
+@admin_required
+async def wiz_price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    draft = context.user_data.get("aw")
+    if not draft or draft.get("step") != "review":
+        await add_stock_callback(update, context)
+        return
+    set_input(context, type="add_wizard")
+    await _ask_price(update, draft)
+
+
+@admin_required
+async def wiz_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    draft = context.user_data.get("aw")
+    if not draft or draft.get("step") != "review":
+        await add_stock_callback(update, context)
+        return
+    draft["is_enabled"] = not draft.get("is_enabled", True)
+    await show(update, *_wiz_review(draft))
 
 
 @admin_required
 async def wiz_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Log the bot out of the account so no stray session is left behind
     await _drop_login(update.effective_user.id, log_out=True)
     context.user_data.pop("aw", None)
     clear_input(context)
@@ -247,132 +421,50 @@ async def wiz_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 @admin_required
-async def wiz_resend_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    draft = context.user_data.get("aw")
-    if not draft or draft.get("step") not in ("otp",):
-        await show(update, "⚠ Nothing to resend.", kb(back_row()))
-        return
-    await _drop_login(update.effective_user.id)
-    await _send_code(update, context, draft)
-
-
-@admin_required
-async def wiz_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    draft = context.user_data.get("aw")
-    if draft and draft.get("step") == "review":
-        draft["is_enabled"] = not draft.get("is_enabled", True)
-        await show(update, *_wiz_review(draft))
-    else:
-        await show(update, "⚠ This wizard expired. Start again.", kb(back_row()))
-
-
-async def _send_code(update, context, draft):
-    """Ask Telegram to send a login code to draft['phone']."""
-    admin_id = update.effective_user.id
-    login = tg_login.AccountLogin(draft["phone"])
-    try:
-        await login.start()
-    except tg_login.LoginError as e:
-        draft["step"] = "phone"
-        await show(update, f"❌ {esc(e)}\n\nSend the number again:", _wiz_cancel_kb())
-        return
-    except Exception as e:
-        logger.exception("Login start failed")
-        draft["step"] = "phone"
-        await show(update, f"❌ Could not connect to Telegram: {esc(e)}\n\nSend the number again:",
-                   _wiz_cancel_kb())
-        return
-    LOGINS[admin_id] = login
-    draft["step"] = "otp"
-    await show(update,
-               f"📨 <b>Step 4 — OTP</b>\n{LINE}\n"
-               f"Telegram sent a login code to <code>{esc(draft['phone'])}</code>.\n\n"
-               "Send the code <b>with spaces</b>, e.g. <code>1 2 3 4 5</code>\n"
-               "<i>(Telegram cancels codes that are forwarded without spaces.)</i>",
-               kb((btn("🔁 Resend OTP", "aw_resend"),), (btn("✖ Cancel", "aw_cancel", DANGER),)))
-
-
-async def _finish_login(update, context, draft, login):
-    """Logged in: read all details, then ask for the price."""
-    try:
-        details = await login.fetch_details()
-    except Exception as e:
-        logger.exception("fetch_details failed")
-        await show(update, f"❌ Logged in, but reading details failed: {esc(e)}", _wiz_cancel_kb())
-        return
-    details["two_fa"] = login.password
-    draft["details"] = details
-    draft["step"] = "price"
-    await show(update,
-               f"✅ <b>Logged in!</b>\n{LINE}\n"
-               f"👤 {esc(details['tg_name'])}  •  🔗 {('@' + esc(details['username'])) if details['username'] else 'no username'}\n\n"
-               "<b>Step 6 — Price</b>\nSend the selling price in ₹ (e.g. <code>150</code>):",
-               _wiz_cancel_kb())
-
-
-def _wiz_review(draft):
-    d = draft["details"]
-    enabled = draft.get("is_enabled", True)
-    sessions = d.get("sessions")
-    text = (
-        f"🧾 <b>Account Recognized</b>\n{LINE}\n"
-        f"🌍 Country: {draft['country_flag']} {esc(draft['country_name'])}\n"
-        f"🏷 Name: <b>{esc(draft['name'])}</b>\n"
-        f"📞 Number: <code>{esc(d['phone'])}</code>\n"
-        f"👤 Telegram Name: <b>{esc(d['tg_name'])}</b>\n"
-        f"🔗 Username: {('@' + esc(d['username'])) if d['username'] else '—'}\n"
-        f"🆔 Telegram ID: <code>{d['tg_user_id']}</code>\n"
-        f"⭐ Premium: <b>{_yn(d['premium'])}</b>\n"
-        f"{LINE}\n🔒 <b>Security</b>\n"
-        f"🔐 2FA: <b>{_onoff(d['two_fa_enabled'])}</b>\n"
-        f"🔑 2FA Password: <code>{esc(d.get('two_fa'))}</code>\n"
-        f"📧 Gmail / Recovery Email: <b>{_yn(d['gmail_added'])}</b>\n"
-        + (f"⏳ Email pending: <code>{esc(d['email_pending'])}</code>\n" if d.get("email_pending") else "")
-        + (f"📱 Active sessions: <b>{sessions}</b>\n" if sessions is not None else "")
-        + f"{LINE}\n💰 Price: <b>{format_price(draft['price'])}</b>\n"
-        f"📌 Listing: <b>{'🟢 Enabled' if enabled else '🔴 Disabled'}</b>"
-    )
-    markup = kb(
-        (btn(f"📌 Listing: {'🟢 Enabled' if enabled else '🔴 Disabled'}  (tap to change)",
-             "aw_tg_enabled", SUCCESS if enabled else DANGER),),
-        (btn("✅  Add Account", "aw_save", SUCCESS),),
-        (btn("✖  Cancel", "aw_cancel", DANGER),),
-    )
-    return text, markup
-
-
-@admin_required
 async def wiz_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     draft = context.user_data.get("aw")
     if not draft or draft.get("step") != "review":
-        await show(update, "⚠ This wizard expired. Start again.",
-                   kb((btn("➕ Add Account", "adm_add", SUCCESS),), back_row()))
+        await add_stock_callback(update, context)
         return
+    if not draft.get("price"):
+        draft["save_after_price"] = True
+        set_input(context, type="add_wizard")
+        await _ask_price(update, draft)
+        return
+    await _save_account(update, context, draft)
+
+
+async def _save_account(update, context, draft):
     db = get_db(context)
-    d = draft["details"]
-    if await db.account_exists(draft["country_id"], d["phone"]):
-        await show(update, f"⚠ <code>{esc(d['phone'])}</code> already exists in this country.",
-                   _wiz_cancel_kb())
+    d = draft.get("details", {})
+    phone = d.get("phone") or draft["phone"]
+    if await db.account_exists(draft["country_id"], phone):
+        await show(update, f"⚠ <code>{esc(phone)}</code> already exists in this country.", _step_kb())
         return
     account_id = await db.add_account(
-        country_id=draft["country_id"], phone_number=d["phone"], price=draft["price"],
-        two_fa=d.get("two_fa"), added_by=update.effective_user.id,
-        category=draft["name"], name=draft["name"], username=d["username"],
-        gmail_added=d["gmail_added"], two_fa_enabled=d["two_fa_enabled"],
+        country_id=draft["country_id"], phone_number=phone, price=draft["price"],
+        otp=draft.get("otp"), two_fa=draft.get("two_fa"), added_by=update.effective_user.id,
+        name=d.get("tg_name"), icon=draft.get("flag", ""), username=d.get("username"),
+        gmail_added=d.get("gmail_added", False), two_fa_enabled=draft.get("two_fa_enabled", False),
         is_enabled=draft.get("is_enabled", True),
     )
-    await db.update_account(account_id, tg_user_id=d["tg_user_id"], session=d["session"])
-    # Keep the session saved in the DB; just close the network connection
-    await _drop_login(update.effective_user.id, log_out=False)
+    if d.get("session"):
+        await db.update_account(account_id, tg_user_id=d.get("tg_user_id"), session=d["session"])
+    await _drop_login(update.effective_user.id, log_out=False)  # keep the saved session
     context.user_data.pop("aw", None)
     clear_input(context)
-    logger.info("Admin %s added account #%s (%s)", update.effective_user.id, account_id, d["phone"])
-    text, markup = await _account_view(db, account_id)
-    await show(update, f"✅ <b>Account #{account_id} added to store!</b>\n\n" + text, markup)
+    logger.info("Admin %s added account #%s (%s)", update.effective_user.id, account_id, phone)
+    await show(update,
+               f"🎉 <b>Account #{account_id} added to store!</b>\n{LINE}\n"
+               f"{draft['flag']} {esc(draft['country_name'])}  •  <code>{esc(phone)}</code>  •  "
+               f"<b>{format_price(draft['price'])}</b>",
+               kb((btn("➕  Add Another Account", "adm_add", SUCCESS),),
+                  (btn("📱 View Account", f"ms_a_{account_id}"), btn("🛠 Dashboard", "admin_back"))))
 
+
+# ── typed input ──
 
 async def _wiz_input(update, context, text):
-    """Typed value for the current wizard step."""
     draft = context.user_data.get("aw")
     admin_id = update.effective_user.id
     if not draft:
@@ -380,65 +472,72 @@ async def _wiz_input(update, context, text):
         return
     step = draft["step"]
 
-    if step == "name":
-        if not text:
-            await show(update, "✏ Send a name for this account.", _wiz_cancel_kb())
+    if step == "country":
+        name = text.strip()[:40]
+        if not name:
+            await show(update, "✏ Type the country name.", _step_kb())
             return
-        draft["name"] = text[:60]
-        draft["step"] = "phone"
-        await show(update,
-                   f"📞 <b>Step 3 — Number</b>\n{LINE}\n"
-                   "Send the phone number with country code (e.g. <code>+919876543210</code>):",
-                   _wiz_cancel_kb())
+        existing = await get_db(context).get_country_by_name(name)
+        if existing and existing["flag"]:
+            draft.update(country_id=existing["id"], country_name=existing["name"], flag=existing["flag"])
+            await _ask_number(update, draft)
+        else:
+            draft["country_name"] = existing["name"] if existing else name.title()
+            await _ask_emoji(update, draft)
+
+    elif step == "emoji":
+        await _save_country(update, context, draft, text.strip()[:8])
 
     elif step == "phone":
         phone = tg_login.normalize_phone(text)
         if len(phone) < 8:
-            await show(update, "❌ Invalid number. Example: <code>+919876543210</code>", _wiz_cancel_kb())
+            await show(update, "❌ Invalid number. Example: <code>+919876543210</code>", _step_kb())
             return
         if await get_db(context).account_exists(draft["country_id"], phone):
-            await show(update, "⚠ This number already exists in this country. Send another:",
-                       _wiz_cancel_kb())
+            await show(update, "⚠ This number already exists. Send another number:", _step_kb())
             return
         draft["phone"] = phone
-        await update.message.reply_text("⏳ Connecting to Telegram and sending OTP…")
-        await _send_code(update, context, draft)
+        if _auto():
+            await update.message.reply_text("⏳ Sending OTP to the account…")
+            await _send_code(update, context, draft)
+        else:
+            await _ask_otp(update, draft)
+
+    elif step in ("otp", "twofa") and not _auto():
+        if step == "otp":
+            draft["otp"] = text[:50]
+            await _ask_twofa(update, draft)
+        else:
+            draft["two_fa"], draft["two_fa_enabled"] = text[:200], True
+            await _delete_quietly(update)
+            await _show_review(update, context, draft)
 
     elif step in ("otp", "twofa"):
         login = LOGINS.get(admin_id)
         if not login or login.expired:
             await _drop_login(admin_id)
-            await show(update, "⌛ Login timed out. Start again.",
-                       kb((btn("➕ Add Account", "adm_add", SUCCESS),)))
             context.user_data.pop("aw", None)
             clear_input(context)
+            await show(update, "⌛ Login timed out. Start again.",
+                       kb((btn("➕ Add Account", "adm_add", SUCCESS),)))
             return
         try:
             if step == "otp":
                 code = tg_login.normalize_code(text)
                 if len(code) < 4:
                     await show(update, "❌ Send the code like <code>1 2 3 4 5</code>",
-                               kb((btn("🔁 Resend OTP", "aw_resend"),), (btn("✖ Cancel", "aw_cancel", DANGER),)))
+                               _step_kb((btn("🔁 Resend OTP", "aw_resend"),)))
                     return
                 result = await login.submit_code(code)
             else:
+                await _delete_quietly(update)
                 result = await login.submit_password(text)
         except tg_login.LoginError as e:
-            await show(update, f"❌ {esc(e)}", _wiz_cancel_kb() if step == "twofa"
-                       else kb((btn("🔁 Resend OTP", "aw_resend"),), (btn("✖ Cancel", "aw_cancel", DANGER),)))
+            extra = (btn("🔁 Resend OTP", "aw_resend"),) if step == "otp" else None
+            await show(update, f"❌ {esc(e)}", _step_kb(extra))
             return
-        # Delete the message containing the 2FA password from the chat
-        if step == "twofa":
-            try:
-                await update.message.delete()
-            except Exception:
-                pass
         if result == "need_password":
-            draft["step"] = "twofa"
-            await show(update,
-                       f"🔐 <b>Step 5 — 2FA</b>\n{LINE}\n"
-                       "This account has 2FA on. Send the <b>2FA password</b>:",
-                       _wiz_cancel_kb())
+            await _ask_twofa(update, draft)
         else:
             await _finish_login(update, context, draft, login)
 
@@ -448,14 +547,24 @@ async def _wiz_input(update, context, text):
             if not 0 < price < 1_000_000:
                 raise ValueError
         except ValueError:
-            await show(update, "❌ Send a valid price, e.g. <code>150</code>", _wiz_cancel_kb())
+            await show(update, "❌ Send a valid price, e.g. <code>150</code>", _step_kb())
             return
         draft["price"] = price
-        draft["step"] = "review"
+        if draft.pop("save_after_price", False):
+            await _save_account(update, context, draft)
+        else:
+            await _show_review(update, context, draft)
+
+    else:  # review: re-show the buttons
         await show(update, *_wiz_review(draft))
 
-    else:  # review: ignore typed text, re-show the buttons
-        await show(update, *_wiz_review(draft))
+
+async def _delete_quietly(update):
+    """Remove the message that contains the 2FA password."""
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
 
 
 # ═══════════════════════════════════════════
@@ -1065,6 +1174,8 @@ def register_admin_panel(application: Application):
         (r"^adm_addhelp$", add_help_callback),
         (r"^aw_c_\d+$", wiz_country_callback),
         (r"^aw_resend$", wiz_resend_callback),
+        (r"^aw_skip$", wiz_skip_callback),
+        (r"^aw_price$", wiz_price_callback),
         (r"^aw_tg_enabled$", wiz_toggle_callback),
         (r"^aw_save$", wiz_save_callback),
         (r"^aw_cancel$", wiz_cancel_callback),
