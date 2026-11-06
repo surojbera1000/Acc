@@ -21,6 +21,7 @@ class Database:
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
         await self._create_tables()
+        await self._run_migrations()
 
     async def close(self):
         """Close the database connection."""
@@ -58,6 +59,8 @@ class Database:
                 otp TEXT,
                 two_fa TEXT,
                 price REAL NOT NULL,
+                category TEXT DEFAULT 'Standard',
+                description TEXT,
                 status TEXT DEFAULT 'available',
                 added_by INTEGER,
                 added_at TEXT DEFAULT (datetime('now')),
@@ -117,6 +120,22 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id);
             CREATE INDEX IF NOT EXISTS idx_deposits_status ON deposits(status);
         """)
+        await self._db.commit()
+
+    async def _run_migrations(self):
+        """Apply schema migrations for existing databases (idempotent)."""
+        # accounts table: category / description columns (added for typed stock)
+        cursor = await self._db.execute("PRAGMA table_info(accounts)")
+        columns = {row["name"] for row in await cursor.fetchall()}
+
+        if "category" not in columns:
+            await self._db.execute(
+                "ALTER TABLE accounts ADD COLUMN category TEXT DEFAULT 'Standard'"
+            )
+        if "description" not in columns:
+            await self._db.execute(
+                "ALTER TABLE accounts ADD COLUMN description TEXT"
+            )
         await self._db.commit()
 
     # ═══════════════════════════════════════════
@@ -256,15 +275,26 @@ class Database:
     # ═══════════════════════════════════════════
 
     async def add_account(self, country_id: int, phone_number: str, price: float,
-                          otp: str = None, two_fa: str = None, added_by: int = None) -> int:
+                          otp: str = None, two_fa: str = None, added_by: int = None,
+                          category: str = "Standard", description: str = None) -> int:
         """Add a new account to stock. Returns account ID."""
         cursor = await self._db.execute(
-            """INSERT INTO accounts (country_id, phone_number, otp, two_fa, price, added_by)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (country_id, phone_number, otp, two_fa, price, added_by)
+            """INSERT INTO accounts
+                   (country_id, phone_number, otp, two_fa, price, category, description, added_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (country_id, phone_number, otp, two_fa, price,
+             category or "Standard", description, added_by)
         )
         await self._db.commit()
         return cursor.lastrowid
+
+    async def account_exists(self, country_id: int, phone_number: str) -> bool:
+        """Check if an account with the same phone already exists in a country."""
+        cursor = await self._db.execute(
+            "SELECT 1 FROM accounts WHERE country_id = ? AND phone_number = ? LIMIT 1",
+            (country_id, phone_number)
+        )
+        return await cursor.fetchone() is not None
 
     async def get_available_accounts(self, country_id: int) -> List[Dict]:
         """Get available accounts for a country."""
@@ -281,6 +311,37 @@ class Database:
         """Get an account by ID."""
         cursor = await self._db.execute(
             "SELECT * FROM accounts WHERE id = ?", (account_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_account_groups(self, country_id: int) -> List[Dict]:
+        """Group available accounts of a country by (category, price).
+
+        Returns one row per distinct offer with a stock count, so the buy
+        menu can show e.g. "Fresh — ₹150 — 10 in stock" as a single button.
+        """
+        cursor = await self._db.execute(
+            """SELECT category, price, COUNT(*) as stock_count,
+                      MAX(description) as description
+               FROM accounts
+               WHERE country_id = ? AND status = 'available'
+               GROUP BY category, price
+               ORDER BY price ASC, category ASC""",
+            (country_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_next_available_account(self, country_id: int, category: str,
+                                         price: float) -> Optional[Dict]:
+        """Get the oldest available account matching a group (for grouped buy)."""
+        cursor = await self._db.execute(
+            """SELECT * FROM accounts
+               WHERE country_id = ? AND category = ? AND price = ? AND status = 'available'
+               ORDER BY added_at ASC
+               LIMIT 1""",
+            (country_id, category, price)
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
@@ -305,7 +366,8 @@ class Database:
 
     async def update_account(self, account_id: int, **kwargs):
         """Update account details."""
-        valid_fields = ["phone_number", "otp", "two_fa", "price", "status", "country_id"]
+        valid_fields = ["phone_number", "otp", "two_fa", "price", "status",
+                        "country_id", "category", "description"]
         updates = {k: v for k, v in kwargs.items() if k in valid_fields}
 
         if not updates:

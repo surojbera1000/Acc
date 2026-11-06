@@ -279,15 +279,17 @@ async def admin_add_account_callback(update: Update, context: ContextTypes.DEFAU
     text = (
         "➕ <b>Add New Account</b>\n\n"
         "Send account details in this format:\n\n"
-        "<code>/addaccount country_id|phone|price|otp|2fa</code>\n\n"
+        "<code>/addaccount country_id|phone|price|otp|2fa|category</code>\n\n"
         "<b>Parameters:</b>\n"
         "• country_id - Country ID number\n"
         "• phone - Phone number\n"
         "• price - Price in ₹\n"
         "• otp - OTP code (optional, use - for none)\n"
-        "• 2fa - 2FA details (optional, use - for none)\n\n"
+        "• 2fa - 2FA details (optional, use - for none)\n"
+        "• category - Type e.g. Fresh/Aged/Premium (optional)\n\n"
         "<b>Example:</b>\n"
-        "<code>/addaccount 1|+919876543210|150|1234|backup_code_here</code>\n\n"
+        "<code>/addaccount 1|+919876543210|150|1234|backup|Fresh</code>\n\n"
+        "💡 Duplicate phone numbers are rejected automatically.\n\n"
         "<b>Available Countries:</b>\n"
     )
     for c in countries:
@@ -325,6 +327,7 @@ async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         price = float(parts[2].strip())
         otp = parts[3].strip() if len(parts) > 3 and parts[3].strip() != "-" else None
         two_fa = parts[4].strip() if len(parts) > 4 and parts[4].strip() != "-" else None
+        category = parts[5].strip() if len(parts) > 5 and parts[5].strip() != "-" else "Standard"
     except (ValueError, IndexError):
         await update.message.reply_text("❌ Invalid values. Check format and try again.")
         return
@@ -337,12 +340,22 @@ async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Country ID {country_id} not found.")
         return
 
+    # Prevent duplicate phone numbers within a country
+    if await db.account_exists(country_id, phone):
+        await update.message.reply_text(
+            f"⚠️ Account with phone <code>{phone}</code> already exists for "
+            f"{country['flag']} {country['name']}. Skipped.",
+            parse_mode="HTML"
+        )
+        return
+
     account_id = await db.add_account(
         country_id=country_id,
         phone_number=phone,
         price=price,
         otp=otp,
         two_fa=two_fa,
+        category=category,
         added_by=update.effective_user.id
     )
 
@@ -350,6 +363,7 @@ async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"✅ <b>Account Added!</b>\n\n"
         f"🆔 Account ID: <b>#{account_id}</b>\n"
         f"🌍 Country: {country['flag']} {country['name']}\n"
+        f"🏷 Type: <b>{category}</b>\n"
         f"📱 Phone: <code>{phone}</code>\n"
         f"💰 Price: {format_price(price)}\n"
         f"🔑 OTP: {'Set' if otp else 'Not set'}\n"
@@ -371,14 +385,20 @@ async def bulk_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
             "📦 <b>Bulk Add Accounts</b>\n\n"
-            "Send multiple accounts, one per line:\n"
-            "<code>/bulkadd country_id|price\n"
-            "phone1|otp1|2fa1\n"
-            "phone2|otp2|2fa2\n"
-            "phone3|otp3|2fa3</code>\n\n"
-            "First line: country_id and price\n"
-            "Following lines: phone|otp|2fa for each account\n"
-            "Use - for empty otp/2fa fields.",
+            "Header line sets the country and default type.\n"
+            "Each following line is one account with its own price:\n\n"
+            "<code>/bulkadd country_id|category\n"
+            "phone1|price1|otp1|2fa1\n"
+            "phone2|price2|otp2|2fa2</code>\n\n"
+            "• <b>category</b> is optional (defaults to Standard)\n"
+            "• <b>price</b> is per-account; if omitted, uses the previous line's price\n"
+            "• Use <code>-</code> for empty otp/2fa fields\n"
+            "• Duplicate phone numbers are skipped automatically\n\n"
+            "<b>Example:</b>\n"
+            "<code>/bulkadd 1|Fresh\n"
+            "+919876543210|150|1234|-\n"
+            "+919876543211|150|5678|backup2\n"
+            "+919876543212|200|-|-</code>",
             parse_mode="HTML"
         )
         return
@@ -388,14 +408,14 @@ async def bulk_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Need at least header line + 1 account.")
         return
 
-    # Parse header
+    # Parse header: country_id|category(optional)
     header = lines[0].split("|")
     try:
         country_id = int(header[0].strip())
-        price = float(header[1].strip())
     except (ValueError, IndexError):
-        await update.message.reply_text("❌ Invalid header. Format: country_id|price")
+        await update.message.reply_text("❌ Invalid header. Format: country_id|category")
         return
+    category = header[1].strip() if len(header) > 1 and header[1].strip() else "Standard"
 
     db = get_db(context)
     country = await db.get_country(country_id)
@@ -404,17 +424,39 @@ async def bulk_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     added = 0
+    skipped = 0
     errors = 0
+    last_price = None
     for line in lines[1:]:
         parts = line.strip().split("|")
         if not parts or not parts[0].strip():
             continue
         phone = parts[0].strip()
-        otp = parts[1].strip() if len(parts) > 1 and parts[1].strip() != "-" else None
-        two_fa = parts[2].strip() if len(parts) > 2 and parts[2].strip() != "-" else None
+
+        # Per-line price (falls back to previous line's price)
+        if len(parts) > 1 and parts[1].strip() and parts[1].strip() != "-":
+            try:
+                price = float(parts[1].strip())
+            except ValueError:
+                errors += 1
+                continue
+        elif last_price is not None:
+            price = last_price
+        else:
+            errors += 1
+            continue
+        last_price = price
+
+        otp = parts[2].strip() if len(parts) > 2 and parts[2].strip() != "-" else None
+        two_fa = parts[3].strip() if len(parts) > 3 and parts[3].strip() != "-" else None
+
+        if await db.account_exists(country_id, phone):
+            skipped += 1
+            continue
 
         try:
-            await db.add_account(country_id, phone, price, otp, two_fa, update.effective_user.id)
+            await db.add_account(country_id, phone, price, otp, two_fa,
+                                 update.effective_user.id, category=category)
             added += 1
         except Exception as e:
             errors += 1
@@ -422,10 +464,11 @@ async def bulk_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"📦 <b>Bulk Add Complete</b>\n\n"
-        f"✅ Added: {added} accounts\n"
+        f"✅ Added: {added}\n"
+        f"⏭ Skipped (duplicate): {skipped}\n"
         f"❌ Errors: {errors}\n"
         f"🌍 Country: {country['flag']} {country['name']}\n"
-        f"💰 Price each: {format_price(price)}",
+        f"🏷 Type: <b>{category}</b>",
         parse_mode="HTML"
     )
 

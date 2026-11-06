@@ -118,18 +118,20 @@ python bot.py
 ```
 
 ### Step 2: Add Accounts
-Single account:
+Single account (category is optional, defaults to `Standard`):
 ```
-/addaccount 1|+919876543210|150|1234|backup_code_here
+/addaccount 1|+919876543210|150|1234|backup_code_here|Fresh
 ```
 
-Bulk add (same country & price):
+Bulk add (per-line price + shared category; duplicates auto-skipped):
 ```
-/bulkadd 1|150
-+919876543210|1234|backup1
-+919876543211|5678|backup2
-+919876543212|9012|-
+/bulkadd 1|Fresh
++919876543210|150|1234|-
++919876543211|150|5678|backup2
++919876543212|200|-|-
 ```
+> Header is `country_id|category`. Each line is `phone|price|otp|2fa`.
+> If a line omits the price, the previous line's price is reused.
 
 ### Step 3: Monitor
 - Use `/admin` to access the full admin panel
@@ -165,11 +167,26 @@ telegram-account-bot/
 
 ---
 
+## Typed Stock & Grouped Buying
+
+Accounts now support a **category/type** (e.g. `Fresh`, `Aged`, `Premium`, `VIP`)
+and an optional **description**. This powers a cleaner, differentiated buying UX:
+
+- Instead of one button per account, the buy menu groups identical offers by
+  `(category, price)` and shows the live stock count, e.g.
+  `💎 Premium  •  ₹250  •  8 left`.
+- Buyers can toggle **sort by price** (low→high / high→low).
+- Selecting an offer delivers the next available account from that group.
+
+> The database migrates automatically — existing accounts default to the
+> `Standard` category, so older setups keep working with no manual steps.
+
 ## Purchase Flow
 
 ```
-User selects country → Picks account → Confirms purchase
-    → Balance deducted → Account details sent automatically
+User selects country → Picks an offer (type + price, with stock count)
+    → Confirms purchase → Balance deducted
+    → Next available account in that group delivered automatically
     → If delivery fails → Auto-refund to wallet + Admin notified
 ```
 

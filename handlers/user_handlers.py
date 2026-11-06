@@ -110,9 +110,14 @@ async def buy_country_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("❌ Country not found.")
         return
 
-    accounts = await db.get_available_accounts(country_id)
+    await _show_country_groups(query, db, country, sort="price_asc")
 
-    if not accounts:
+
+async def _show_country_groups(query, db, country, sort="price_asc"):
+    """Render the grouped (category + price) offer list for a country."""
+    groups = await db.get_account_groups(country["id"])
+
+    if not groups:
         await query.edit_message_text(
             f"😔 No accounts available for <b>{country['flag']} {country['name']}</b> right now.\n\n"
             f"Please check back later!",
@@ -121,14 +126,115 @@ async def buy_country_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    if sort == "price_desc":
+        groups = sorted(groups, key=lambda g: g["price"], reverse=True)
+    else:
+        groups = sorted(groups, key=lambda g: g["price"])
+
+    total = sum(g["stock_count"] for g in groups)
     text = (
         f"🌍 <b>{country['flag']} {country['name']}</b>\n\n"
-        f"📦 Available accounts: <b>{len(accounts)}</b>\n\n"
-        f"Select an account to purchase:\n"
+        f"📦 Available: <b>{total}</b> accounts across <b>{len(groups)}</b> option(s)\n\n"
+        f"Choose an option to purchase:\n"
     )
 
-    keyboard = Keyboards.account_list(accounts, country['name'])
+    keyboard = Keyboards.account_groups(country["id"], groups, sort=sort)
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def buy_group_sort_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle sort order of the grouped offer list."""
+    query = update.callback_query
+    await query.answer()
+    _, country_id, sort = query.data.split("_", 2)
+    db = get_db(context)
+    country = await db.get_country(int(country_id))
+    if not country:
+        await query.edit_message_text("❌ Country not found.")
+        return
+    await _show_country_groups(query, db, country, sort=sort)
+
+
+async def buy_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle selecting a (category, price) group - show confirmation."""
+    query = update.callback_query
+    await query.answer()
+
+    # grp_{country_id}_{category}_{price} — parse from both ends so the
+    # category is allowed to contain underscores.
+    body = query.data[len("grp_"):]
+    country_id_str, rest = body.split("_", 1)
+    category, price_str = rest.rsplit("_", 1)
+    country_id = int(country_id_str)
+    price = float(price_str)
+    db = get_db(context)
+
+    country = await db.get_country(country_id)
+    account = await db.get_next_available_account(country_id, category, price)
+    if not country or not account:
+        await query.edit_message_text(
+            "❌ This option is no longer available.\nPlease pick another one.",
+            reply_markup=Keyboards.back_button("buy_back")
+        )
+        return
+
+    groups = await db.get_account_groups(country_id)
+    stock = next((g["stock_count"] for g in groups
+                  if g["category"] == category and g["price"] == price), 0)
+    user_balance = await db.get_user_balance(query.from_user.id)
+
+    text = (
+        f"🛒 <b>Confirm Purchase</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🌍 Country: <b>{country['flag']} {country['name']}</b>\n"
+        f"🏷 Type: <b>{category}</b>\n"
+        f"📦 In stock: <b>{stock}</b>\n"
+        f"💰 Price: <b>{format_price(price)}</b>\n"
+    )
+    if account.get("description"):
+        text += f"📝 {account['description']}\n"
+    text += (
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👛 Your Balance: <b>{format_price(user_balance)}</b>\n"
+    )
+
+    if user_balance < price:
+        text += (
+            f"\n⚠️ <b>Insufficient balance!</b>\n"
+            f"You need <b>{format_price(price - user_balance)}</b> more.\n"
+            f"Please deposit funds first."
+        )
+        keyboard = Keyboards.insufficient_balance()
+    else:
+        text += f"\n✅ You have enough balance to purchase."
+        keyboard = Keyboards.confirm_group_purchase(country_id, category, price)
+
+    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def confirm_group_purchase_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Confirm a grouped purchase - picks the next available account & delivers."""
+    query = update.callback_query
+    await query.answer()
+
+    # cgrp_{country_id}_{category}_{price} — parse from both ends (see above).
+    body = query.data[len("cgrp_"):]
+    country_id_str, rest = body.split("_", 1)
+    category, price_str = rest.rsplit("_", 1)
+    country_id = int(country_id_str)
+    price = float(price_str)
+    db = get_db(context)
+
+    account = await db.get_next_available_account(country_id, category, price)
+    if not account:
+        await query.edit_message_text(
+            "❌ Sorry, this option just sold out!\nPlease pick another one.",
+            reply_markup=Keyboards.back_button("buy_back")
+        )
+        return
+
+    # Reuse the shared purchase routine with the resolved account id
+    await _process_purchase(query, context, account["id"])
 
 
 async def buy_account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -176,11 +282,15 @@ async def buy_account_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def confirm_purchase_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle purchase confirmation - process the purchase."""
+    """Handle purchase confirmation (legacy per-account flow)."""
     query = update.callback_query
     await query.answer()
-
     account_id = int(query.data.split("_")[-1])
+    await _process_purchase(query, context, account_id)
+
+
+async def _process_purchase(query, context: ContextTypes.DEFAULT_TYPE, account_id: int):
+    """Shared purchase/delivery routine with auto-refund on failure."""
     user_id = query.from_user.id
     db = get_db(context)
 
@@ -468,6 +578,11 @@ def register_user_handlers(application: Application):
 
     # Buy flow callback handlers
     application.add_handler(CallbackQueryHandler(buy_country_callback, pattern=r"^buy_country_\d+$"))
+    # Grouped buy flow (category + price)
+    application.add_handler(CallbackQueryHandler(buy_group_sort_callback, pattern=r"^grpsort_\d+_(price_asc|price_desc)$"))
+    application.add_handler(CallbackQueryHandler(buy_group_callback, pattern=r"^grp_\d+_.+_\d+$"))
+    application.add_handler(CallbackQueryHandler(confirm_group_purchase_callback, pattern=r"^cgrp_\d+_.+_\d+$"))
+    # Legacy per-account buy flow (kept for backward compatibility)
     application.add_handler(CallbackQueryHandler(buy_account_callback, pattern=r"^buy_account_\d+$"))
     application.add_handler(CallbackQueryHandler(confirm_purchase_callback, pattern=r"^confirm_buy_\d+$"))
     application.add_handler(CallbackQueryHandler(cancel_buy_callback, pattern=r"^cancel_buy$"))

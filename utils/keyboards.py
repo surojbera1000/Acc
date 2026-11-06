@@ -115,7 +115,7 @@ class Keyboards:
 
     @staticmethod
     def account_list(accounts, country_name):
-        """Generate account selection keyboard for buying."""
+        """Generate account selection keyboard for buying (legacy per-account)."""
         keyboard = []
         row = []
         for acc in accounts:
@@ -129,6 +129,52 @@ class Keyboards:
         if row:
             keyboard.append(row)
         keyboard.append([InlineKeyboardButton("⬅️ Back to Countries", callback_data="buy_back")])
+        return InlineKeyboardMarkup(keyboard)
+
+    # Category icons for a nicer, differentiated buy experience
+    CATEGORY_ICONS = {
+        "fresh": "🆕", "aged": "⏳", "premium": "💎", "vip": "👑",
+        "otp": "🔑", "standard": "📱",
+    }
+
+    @classmethod
+    def _category_icon(cls, category):
+        return cls.CATEGORY_ICONS.get((category or "standard").strip().lower(), "📦")
+
+    @classmethod
+    def account_groups(cls, country_id, groups, sort="price_asc"):
+        """Grouped offers keyboard: one button per (category, price) with stock.
+
+        ``groups`` items have: category, price, stock_count.
+        ``sort`` controls the toggle label (handled by the caller).
+        """
+        keyboard = []
+        for g in groups:
+            icon = cls._category_icon(g["category"])
+            label = (f"{icon} {g['category']}  •  ₹{g['price']:.0f}  "
+                     f"•  {g['stock_count']} left")
+            # callback carries country, category and price so the handler is stateless
+            cb = f"grp_{country_id}_{g['category']}_{g['price']:.0f}"
+            keyboard.append([InlineKeyboardButton(label, callback_data=cb, style=PRIMARY)])
+
+        # Sort toggle
+        toggle_label = ("🔽 Price: High → Low" if sort == "price_asc"
+                        else "🔼 Price: Low → High")
+        next_sort = "price_desc" if sort == "price_asc" else "price_asc"
+        keyboard.append([InlineKeyboardButton(
+            toggle_label, callback_data=f"grpsort_{country_id}_{next_sort}")])
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Countries", callback_data="buy_back")])
+        return InlineKeyboardMarkup(keyboard)
+
+    @classmethod
+    def confirm_group_purchase(cls, country_id, category, price):
+        """Confirmation keyboard for a grouped (category/price) purchase."""
+        keyboard = [
+            [InlineKeyboardButton(
+                "🟢 Confirm Purchase",
+                callback_data=f"cgrp_{country_id}_{category}_{price:.0f}", style=SUCCESS)],
+            [InlineKeyboardButton("⬅️ Back", callback_data=f"buy_country_{country_id}")],
+        ]
         return InlineKeyboardMarkup(keyboard)
 
     @staticmethod
