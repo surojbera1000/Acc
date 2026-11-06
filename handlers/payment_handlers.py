@@ -10,7 +10,7 @@ from telegram.ext import (
 
 from config import UPI_ID, UPI_NAME, CURRENCY_SYMBOL, SUPPORT_CONTACT, ADMIN_IDS
 from database import Database
-from utils.keyboards import Keyboards
+from utils.keyboards import Keyboards, SUCCESS, DANGER
 from utils.helpers import format_price
 
 logger = logging.getLogger(__name__)
@@ -287,8 +287,8 @@ async def notify_admins_new_deposit(context: ContextTypes.DEFAULT_TYPE,
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Approve", callback_data=f"approve_deposit_{deposit_id}"),
-         InlineKeyboardButton("❌ Reject", callback_data=f"reject_deposit_{deposit_id}")]
+        [InlineKeyboardButton("✅ Approve", callback_data=f"approve_deposit_{deposit_id}", style=SUCCESS),
+         InlineKeyboardButton("❌ Reject", callback_data=f"reject_deposit_{deposit_id}", style=DANGER)]
     ])
 
     text = (
@@ -367,10 +367,23 @@ async def payment_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 # REGISTER PAYMENT HANDLERS
 # ═══════════════════════════════════════════
 
+async def menu_deposit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """'Deposit Now' button (e.g. from insufficient balance screen)."""
+    await update.callback_query.answer()
+    await deposit_command(update, context)
+
+
+async def copy_upi_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """'Copy UPI ID' button: show the UPI ID in a popup so it can be copied."""
+    await update.callback_query.answer(f"UPI ID: {UPI_ID}", show_alert=True)
+
+
 def register_payment_handlers(application: Application):
     """Register all payment-related handlers."""
     # Deposit command
     application.add_handler(CommandHandler("deposit", deposit_command))
+    application.add_handler(CallbackQueryHandler(menu_deposit_callback, pattern=r"^menu_deposit$"))
+    application.add_handler(CallbackQueryHandler(copy_upi_callback, pattern=r"^copyupi_\d+$"))
 
     # Deposit amount callbacks
     application.add_handler(CallbackQueryHandler(

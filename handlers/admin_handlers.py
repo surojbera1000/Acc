@@ -6,9 +6,9 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, MessageHandler, filters
 )
 
-from config import ADMIN_IDS, CURRENCY_SYMBOL
+from config import ADMIN_IDS, CURRENCY_SYMBOL, SUPPORT_CONTACT
 from database import Database
-from utils.keyboards import Keyboards
+from utils.keyboards import Keyboards, PRIMARY, SUCCESS, DANGER
 from utils.helpers import format_price, is_admin
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ async def admin_stock_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
+        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back", style=PRIMARY)]
     ])
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -142,7 +142,7 @@ async def admin_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
+        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back", style=PRIMARY)]
     ])
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -177,7 +177,7 @@ async def admin_orders_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
+        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back", style=PRIMARY)]
     ])
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -209,7 +209,7 @@ async def admin_countries_callback(update: Update, context: ContextTypes.DEFAULT
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
+        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back", style=PRIMARY)]
     ])
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -297,7 +297,7 @@ async def admin_add_account_callback(update: Update, context: ContextTypes.DEFAU
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
+        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back", style=PRIMARY)]
     ])
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -501,7 +501,7 @@ async def admin_edit_account_callback(update: Update, context: ContextTypes.DEFA
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
+        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back", style=PRIMARY)]
     ])
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -580,7 +580,7 @@ async def admin_remove_account_callback(update: Update, context: ContextTypes.DE
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")]
+        [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back", style=PRIMARY)]
     ])
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -659,14 +659,14 @@ async def admin_deposits_callback(update: Update, context: ContextTypes.DEFAULT_
         keyboard_rows.append([
             InlineKeyboardButton(
                 f"✅ #{dep['id']} ({format_price(dep['amount'])})",
-                callback_data=f"approve_deposit_{dep['id']}"
+                callback_data=f"approve_deposit_{dep['id']}", style=SUCCESS
             ),
             InlineKeyboardButton(
                 f"❌ #{dep['id']}",
-                callback_data=f"reject_deposit_{dep['id']}"
+                callback_data=f"reject_deposit_{dep['id']}", style=DANGER
             )
         ])
-    keyboard_rows.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")])
+    keyboard_rows.append([InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back", style=PRIMARY)])
     keyboard = InlineKeyboardMarkup(keyboard_rows)
 
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
@@ -757,7 +757,7 @@ async def reject_deposit_callback(update: Update, context: ContextTypes.DEFAULT_
             f"❌ <b>Deposit Rejected</b>\n\n"
             f"Your deposit of {format_price(deposit['amount'])} was not approved.\n"
             f"Please contact support if you believe this is an error.\n"
-            f"Support: {ADMIN_IDS}",
+            f"Support: {SUPPORT_CONTACT}",
             parse_mode="HTML"
         )
     except Exception as e:

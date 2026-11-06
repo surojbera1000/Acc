@@ -1,4 +1,5 @@
 """User-facing handlers for the Telegram Account Bot."""
+import html
 import logging
 from telegram import Update
 from telegram.ext import (
@@ -45,7 +46,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📜 <b>Order History</b> - View your purchases\n"
         f"💰 <b>Deposit</b> - Add funds via UPI\n"
         f"👛 <b>Wallet</b> - Check your balance\n"
-        f"❓ <b>Help</b> - Contact support\n"
+        f"👤 <b>Profile</b> - Your account details\n"
+        f"📞 <b>Support</b> - Chat with us directly\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"Use the buttons below to navigate! 👇"
     )
@@ -499,40 +501,51 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════
-# HELP
+# PROFILE
 # ═══════════════════════════════════════════
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help command - show help info."""
-    text = (
-        f"❓ <b>Help & Support</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>How to buy an account:</b>\n"
-        f"1️⃣ Deposit funds using /deposit\n"
-        f"2️⃣ Browse accounts using /buy\n"
-        f"3️⃣ Select a country and account\n"
-        f"4️⃣ Confirm your purchase\n"
-        f"5️⃣ Receive account details instantly!\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Commands:</b>\n"
-        f"/start - Main menu\n"
-        f"/buy - Buy an account\n"
-        f"/wallet - Check balance\n"
-        f"/deposit - Add funds\n"
-        f"/history - Order history\n"
-        f"/help - This help message\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Need assistance?</b>\n"
-        f"📩 Contact support: {SUPPORT_CONTACT}\n\n"
-        f"<b>Refund Policy:</b>\n"
-        f"If an account fails to deliver, your balance\n"
-        f"is automatically refunded to your wallet."
-    )
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the user's profile: identity, balance and order count."""
+    user = update.effective_user
+    db = get_db(context)
 
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode="HTML")
-    else:
-        await update.message.reply_text(text, parse_mode="HTML")
+    user_data = await db.get_or_create_user(
+        user_id=user.id, username=user.username,
+        first_name=user.first_name, last_name=user.last_name
+    )
+    orders = await db.get_user_orders(user.id, limit=1000)
+    completed = sum(1 for o in orders if o["status"] == "completed")
+
+    text = (
+        f"👤 <b>My Profile</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🙍 Name: <b>{html.escape(get_user_display_name(user))}</b>\n"
+        f"🔗 Username: {'@' + html.escape(user.username) if user.username else 'Not set'}\n"
+        f"🆔 User ID: <code>{user.id}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Balance: <b>{format_price(user_data['balance'])}</b>\n"
+        f"🛒 Orders Completed: <b>{completed}</b>\n"
+        f"📅 Member Since: {user_data['joined_at'][:10]}"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
+# ═══════════════════════════════════════════
+# SUPPORT
+# ═══════════════════════════════════════════
+
+async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show a button that opens a direct chat with the support account."""
+    handle = SUPPORT_CONTACT.strip().lstrip("@")
+    text = (
+        f"📞 <b>Customer Support</b>\n\n"
+        f"Need help with an order, deposit or refund?\n"
+        f"Tap the button below to chat directly with <b>@{html.escape(handle)}</b>.\n\n"
+        f"💡 <i>Share your Order ID or Deposit ID for faster help.</i>"
+    )
+    await update.message.reply_text(
+        text, reply_markup=Keyboards.support_button(SUPPORT_CONTACT), parse_mode="HTML"
+    )
 
 
 # ═══════════════════════════════════════════
@@ -553,8 +566,10 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await deposit_command(update, context)
     elif text == "👛 Wallet":
         await wallet_command(update, context)
-    elif text == "❓ Help":
-        await help_command(update, context)
+    elif text == "👤 Profile":
+        await profile_command(update, context)
+    elif text == "📞 Support":
+        await support_command(update, context)
     else:
         # Unknown text - show main menu
         await update.message.reply_text(
@@ -574,7 +589,8 @@ def register_user_handlers(application: Application):
     application.add_handler(CommandHandler("buy", buy_command))
     application.add_handler(CommandHandler("wallet", wallet_command))
     application.add_handler(CommandHandler("history", history_command))
-    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("profile", profile_command))
+    application.add_handler(CommandHandler("support", support_command))
 
     # Buy flow callback handlers
     application.add_handler(CallbackQueryHandler(buy_country_callback, pattern=r"^buy_country_\d+$"))

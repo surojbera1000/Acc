@@ -34,35 +34,18 @@ class Keyboards:
 
     @staticmethod
     def main_menu():
-        """Main menu reply keyboard (native coloured buttons)."""
+        """Main menu reply keyboard (every button natively coloured)."""
         keyboard = [
-            [KeyboardButton("🛒 Buy Account", style=PRIMARY),
+            [KeyboardButton("🛒 Buy Account", style=SUCCESS),
              KeyboardButton("👛 Wallet", style=PRIMARY)],
             [KeyboardButton("💰 Deposit", style=SUCCESS),
-             KeyboardButton("📜 Order History")],
-            [KeyboardButton("🎁 Offers", style=SUCCESS),
-             KeyboardButton("👤 Profile")],
-            [KeyboardButton("❓ Help"),
-             KeyboardButton("📞 Support")],
+             KeyboardButton("📜 Order History", style=PRIMARY)],
+            [KeyboardButton("👤 Profile", style=PRIMARY),
+             KeyboardButton("📞 Support", style=DANGER)],
         ]
         return ReplyKeyboardMarkup(
             keyboard, resize_keyboard=True, input_field_placeholder="Choose an option 👇"
         )
-
-    @staticmethod
-    def inline_main_menu():
-        """Inline version of the main menu (native coloured buttons)."""
-        keyboard = [
-            [InlineKeyboardButton("🛒 Buy Account", callback_data="menu_buy", style=PRIMARY),
-             InlineKeyboardButton("👛 Wallet", callback_data="menu_wallet", style=PRIMARY)],
-            [InlineKeyboardButton("💰 Deposit", callback_data="menu_deposit", style=SUCCESS),
-             InlineKeyboardButton("📜 History", callback_data="menu_history")],
-            [InlineKeyboardButton("🎁 Offers", callback_data="menu_offers", style=SUCCESS),
-             InlineKeyboardButton("👤 Profile", callback_data="menu_profile")],
-            [InlineKeyboardButton("❓ Help", callback_data="menu_help"),
-             InlineKeyboardButton("📞 Support", callback_data="menu_support")],
-        ]
-        return InlineKeyboardMarkup(keyboard)
 
     # ──────────────────────────────────────────
     # ADMIN PANEL
@@ -73,15 +56,15 @@ class Keyboards:
         """Admin panel inline keyboard (grouped & natively colour-coded)."""
         keyboard = [
             [InlineKeyboardButton("🟢 Add Account", callback_data="admin_add_account", style=SUCCESS),
-             InlineKeyboardButton("🟡 Edit Account", callback_data="admin_edit_account")],
+             InlineKeyboardButton("🟡 Edit Account", callback_data="admin_edit_account", style=PRIMARY)],
             [InlineKeyboardButton("🔴 Remove Account", callback_data="admin_remove_account", style=DANGER),
              InlineKeyboardButton("🔵 Stock Status", callback_data="admin_stock", style=PRIMARY)],
-            [InlineKeyboardButton("🧾 View Orders", callback_data="admin_orders"),
-             InlineKeyboardButton("📈 Statistics", callback_data="admin_stats")],
-            [InlineKeyboardButton("🌍 Countries", callback_data="admin_countries"),
+            [InlineKeyboardButton("🧾 View Orders", callback_data="admin_orders", style=PRIMARY),
+             InlineKeyboardButton("📈 Statistics", callback_data="admin_stats", style=PRIMARY)],
+            [InlineKeyboardButton("🌍 Countries", callback_data="admin_countries", style=PRIMARY),
              InlineKeyboardButton("💳 Pending Deposits", callback_data="admin_deposits", style=PRIMARY)],
-            [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
-             InlineKeyboardButton("⚙️ Settings", callback_data="admin_settings")],
+            [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast", style=PRIMARY),
+             InlineKeyboardButton("⚙️ Settings", callback_data="admin_settings", style=PRIMARY)],
             [InlineKeyboardButton("✖️ Close Panel", callback_data="admin_close", style=DANGER)],
         ]
         return InlineKeyboardMarkup(keyboard)
@@ -103,14 +86,14 @@ class Keyboards:
             if stock != "":
                 label += f"  •  {stock} left"
             row.append(InlineKeyboardButton(
-                label, callback_data=f"{prefix}_country_{country['id']}"
+                label, callback_data=f"{prefix}_country_{country['id']}", style=PRIMARY
             ))
             if len(row) == 2:
                 keyboard.append(row)
                 row = []
         if row:
             keyboard.append(row)
-        keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data=f"{prefix}_back")])
+        keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data=f"{prefix}_back", style=PRIMARY)])
         return InlineKeyboardMarkup(keyboard)
 
     @staticmethod
@@ -128,7 +111,7 @@ class Keyboards:
                 row = []
         if row:
             keyboard.append(row)
-        keyboard.append([InlineKeyboardButton("⬅️ Back to Countries", callback_data="buy_back")])
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Countries", callback_data="buy_back", style=PRIMARY)])
         return InlineKeyboardMarkup(keyboard)
 
     # Category icons for a nicer, differentiated buy experience
@@ -162,8 +145,8 @@ class Keyboards:
                         else "🔼 Price: Low → High")
         next_sort = "price_desc" if sort == "price_asc" else "price_asc"
         keyboard.append([InlineKeyboardButton(
-            toggle_label, callback_data=f"grpsort_{country_id}_{next_sort}")])
-        keyboard.append([InlineKeyboardButton("⬅️ Back to Countries", callback_data="buy_back")])
+            toggle_label, callback_data=f"grpsort_{country_id}_{next_sort}", style=PRIMARY)])
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Countries", callback_data="buy_back", style=PRIMARY)])
         return InlineKeyboardMarkup(keyboard)
 
     @classmethod
@@ -173,7 +156,7 @@ class Keyboards:
             [InlineKeyboardButton(
                 "🟢 Confirm Purchase",
                 callback_data=f"cgrp_{country_id}_{category}_{price:.0f}", style=SUCCESS)],
-            [InlineKeyboardButton("⬅️ Back", callback_data=f"buy_country_{country_id}")],
+            [InlineKeyboardButton("⬅️ Back", callback_data=f"buy_country_{country_id}", style=PRIMARY)],
         ]
         return InlineKeyboardMarkup(keyboard)
 
@@ -191,7 +174,7 @@ class Keyboards:
         """Shown when the user cannot afford a purchase."""
         keyboard = [
             [InlineKeyboardButton("💰 Deposit Now", callback_data="menu_deposit", style=SUCCESS)],
-            [InlineKeyboardButton("⬅️ Back", callback_data="buy_back")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="buy_back", style=PRIMARY)],
         ]
         return InlineKeyboardMarkup(keyboard)
 
@@ -203,14 +186,14 @@ class Keyboards:
     def deposit_amounts():
         """Deposit amount selection keyboard."""
         keyboard = [
-            [InlineKeyboardButton("₹50", callback_data="deposit_50"),
-             InlineKeyboardButton("₹100", callback_data="deposit_100"),
-             InlineKeyboardButton("₹200", callback_data="deposit_200")],
-            [InlineKeyboardButton("₹500", callback_data="deposit_500"),
-             InlineKeyboardButton("₹1000", callback_data="deposit_1000"),
-             InlineKeyboardButton("₹2000", callback_data="deposit_2000")],
+            [InlineKeyboardButton("₹50", callback_data="deposit_50", style=SUCCESS),
+             InlineKeyboardButton("₹100", callback_data="deposit_100", style=SUCCESS),
+             InlineKeyboardButton("₹200", callback_data="deposit_200", style=SUCCESS)],
+            [InlineKeyboardButton("₹500", callback_data="deposit_500", style=SUCCESS),
+             InlineKeyboardButton("₹1000", callback_data="deposit_1000", style=SUCCESS),
+             InlineKeyboardButton("₹2000", callback_data="deposit_2000", style=SUCCESS)],
             [InlineKeyboardButton("💎 Custom Amount", callback_data="deposit_custom", style=PRIMARY)],
-            [InlineKeyboardButton("⬅️ Back", callback_data="deposit_back")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="deposit_back", style=PRIMARY)],
         ]
         return InlineKeyboardMarkup(keyboard)
 
@@ -219,7 +202,7 @@ class Keyboards:
         """Payment done confirmation keyboard."""
         keyboard = [
             [InlineKeyboardButton("🟢 I've Paid", callback_data=f"paid_{deposit_id}", style=SUCCESS)],
-            [InlineKeyboardButton("📋 Copy UPI ID", callback_data=f"copyupi_{deposit_id}")],
+            [InlineKeyboardButton("📋 Copy UPI ID", callback_data=f"copyupi_{deposit_id}", style=PRIMARY)],
             [InlineKeyboardButton("🔴 Cancel", callback_data=f"cancel_deposit_{deposit_id}", style=DANGER)],
         ]
         return InlineKeyboardMarkup(keyboard)
@@ -241,9 +224,9 @@ class Keyboards:
     def admin_account_actions(account_id):
         """Admin actions for a specific account."""
         keyboard = [
-            [InlineKeyboardButton("🟡 Edit", callback_data=f"edit_acc_{account_id}"),
+            [InlineKeyboardButton("🟡 Edit", callback_data=f"edit_acc_{account_id}", style=PRIMARY),
              InlineKeyboardButton("🔴 Delete", callback_data=f"delete_acc_{account_id}", style=DANGER)],
-            [InlineKeyboardButton("⬅️ Back", callback_data="admin_stock")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="admin_stock", style=PRIMARY)],
         ]
         return InlineKeyboardMarkup(keyboard)
 
@@ -252,7 +235,7 @@ class Keyboards:
         """Confirm account deletion."""
         keyboard = [
             [InlineKeyboardButton("🔴 Yes, Delete", callback_data=f"confirm_delete_{account_id}", style=DANGER),
-             InlineKeyboardButton("⚫ No, Cancel", callback_data="admin_stock")],
+             InlineKeyboardButton("⚫ No, Cancel", callback_data="admin_stock", style=PRIMARY)],
         ]
         return InlineKeyboardMarkup(keyboard)
 
@@ -263,15 +246,14 @@ class Keyboards:
     @staticmethod
     def back_button(callback_data="back_main"):
         """Simple back button."""
-        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data=callback_data)]]
+        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data=callback_data, style=PRIMARY)]]
         return InlineKeyboardMarkup(keyboard)
 
     @staticmethod
     def support_button(support_contact):
-        """Direct-to-support URL button (opens chat)."""
-        handle = support_contact.lstrip("@")
+        """Direct-to-support URL button: opens a private chat with the support account."""
+        handle = support_contact.strip().lstrip("@")
         keyboard = [
-            [InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{handle}", style=PRIMARY)],
-            [InlineKeyboardButton("⬅️ Back", callback_data="menu_back")],
+            [InlineKeyboardButton(f"💬 Chat with @{handle}", url=f"https://t.me/{handle}", style=SUCCESS)],
         ]
         return InlineKeyboardMarkup(keyboard)

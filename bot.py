@@ -37,7 +37,8 @@ async def post_init(application: Application):
         BotCommand("wallet", "Check your wallet balance"),
         BotCommand("deposit", "Deposit funds"),
         BotCommand("history", "View order history"),
-        BotCommand("help", "Get help & support"),
+        BotCommand("profile", "View your profile"),
+        BotCommand("support", "Chat with support"),
         BotCommand("admin", "Admin panel (admins only)"),
     ]
     await application.bot.set_my_commands(commands)

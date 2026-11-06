@@ -29,7 +29,7 @@ PAYMENT_CHECK_INTERVAL = 30  # seconds between payment status checks
 PAYMENT_TIMEOUT = 600  # 10 minutes timeout for payment verification
 
 # Support Contact
-SUPPORT_CONTACT = os.getenv("SUPPORT_CONTACT", "@Senkaizen")
+SUPPORT_CONTACT = os.getenv("SUPPORT_CONTACT", "@M4rolex")
 
 # Database
 DATABASE_PATH = os.getenv("DATABASE_PATH", "bot_database.db")
